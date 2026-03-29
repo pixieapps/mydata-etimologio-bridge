@@ -47,7 +47,7 @@ This is believed to be the first open-source PHP implementation of the e-timolog
 
 ```bash
 git clone https://github.com/pixieapps/mydata-etimologio-bridge.git
-cd etimologio
+cd mydata-etimologio-bridge
 cp config.example.php config.php
 ```
 
