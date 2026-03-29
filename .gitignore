@@ -1,0 +1,14 @@
+# Credentials — NEVER commit this
+config.php
+ 
+# Session cookie file
+etimologio_cookies.txt
+/tmp/etimologio_cookies.txt
+ 
+# OS & editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+ 
