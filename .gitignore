@@ -1,14 +1,17 @@
-# Credentials — NEVER commit this
+# ── Credentials ───────────────────────────────────────────────────────────────
+# Copy config.example.php to config.php and fill in your credentials.
+# NEVER commit config.php — it contains your e-timologio username and subscription key.
 config.php
- 
-# Session cookie file
-etimologio_cookies.txt
-/tmp/etimologio_cookies.txt
- 
-# OS & editor
+
+# ── Runtime files ─────────────────────────────────────────────────────────────
+# Session cookies and product/series cache — generated automatically on first run.
+# Contains your session token — must never be committed or made web-accessible.
+files/
+
+# ── OS & editor noise ─────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
 .idea/
 .vscode/
-*.swp
- 
