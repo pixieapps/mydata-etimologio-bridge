@@ -62,17 +62,17 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   $ch = etimologio_login();
 //
 //   // Taxisnet lookup (read-only, nothing saved)
-//   $info = etimologio_taxisnet($ch, '007690144');
+//   $info = etimologio_taxisnet($ch, '800764388');
 //   // Returns: ['name'=>..., 'address'=>..., 'city'=>..., 'zip'=>..., 'doy'=>...]
 //   // Returns: null if AFM not found
 //
 //   // Find or auto-create a Greek customer
-//   $customer = etimologio_customer($ch, '007690144');
+//   $customer = etimologio_customer($ch, '800764388');
 //   // Returns: ['success'=>true, 'status'=>'found'|'created', 'code'=>..., 'vat'=>..., 'info'=>[...]]
 //
 //   // Full customer lookup — DB first, Taxisnet auto-create for Greek, null for unknown foreign
 //   // Returns all fields including email, zip, phone (fetched from EditCustomer page)
-//   $full = etimologio_customer_full($ch, '007690144');
+//   $full = etimologio_customer_full($ch, '800764388');
 //   // Returns: ['vat','name','address','city','zip','email','phone','country','code'] or null
 //
 //   // List all saved customers
@@ -100,7 +100,7 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   // List issued invoices by date range
 //   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026');
 //   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '58');          // filter by type
-//   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '', '007690144'); // filter by AFM
+//   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '', '800764388'); // filter by AFM
 //   // Returns: ['success'=>true, 'count'=>N, 'date_from'=>..., 'date_to'=>..., 'invoices'=>[...]]
 //   // Each invoice: ['no','mark','type','issue_date','series','aa','counterpart','net','vat','total']
 //
@@ -127,7 +127,7 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //       'amount'      => 1000.00,
 //       'type'        => '20',
 //       'payment'     => 5,
-//       'afm'         => '007690144',
+//       'afm'         => '800764388',
 //       'description' => 'ΥΠ001Τ',
 //       'withholding_category' => 3,
 //       'withholding_amount'   => 200.00,
@@ -162,7 +162,7 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //       'amount'  => 500.00,
 //       'type'    => '58',
 //       'payment' => 6,
-//       'afm'     => '007690144',
+//       'afm'     => '800764388',
 //       'live'    => true,
 //   ]);
 //   // Returns: ['success'=>true, 'live'=>true, 'mark'=>'400012848306927', 'aa','qrUrl','type','series','amount_net','amount_vat','amount_total']
@@ -234,10 +234,10 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   Call this file directly via HTTP — all parameters via GET or POST.
 //
 //   Taxisnet lookup (read-only, no customer saved):
-//     ?taxisnet=007690144
+//     ?taxisnet=800764388
 //
 //   Customer find/create (Greek 9-digit AFM only — Taxisnet lookup):
-//     ?afm=007690144
+//     ?afm=800764388
 //
 //   List products (served from cache; auto-builds full cache on first run):
 //     ?products=1
@@ -260,7 +260,7 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   List invoices (date_from defaults to 1st of month, date_to defaults to today):
 //     ?invoices=1&date_from=01/01/2026&date_to=30/04/2026
 //     ?invoices=1&date_from=01/01/2026&invoice_type=58
-//     ?invoices=1&date_from=01/01/2026&afm=007690144
+//     ?invoices=1&date_from=01/01/2026&afm=800764388
 //
 //   Invoice lookup by MARK:
 //     ?mark_lookup=400012848306927
@@ -274,14 +274,14 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   Draft invoice:
 //     ?amount=500&type=58&payment=3
 //     ?amount=500&type=58&payment=6&name=JOHN+SMITH&country=US&language=en
-//     ?amount=1000&type=20&payment=5&afm=007690144&description=ΥΠ001Τ
-//     ?amount=1000&type=20&payment=5&afm=007690144&withholding_category=3&withholding_amount=200
+//     ?amount=1000&type=20&payment=5&afm=800764388&description=ΥΠ001Τ
+//     ?amount=1000&type=20&payment=5&afm=800764388&withholding_category=3&withholding_amount=200
 //     ?amount=500&type=58&payment=3&series=B           (override series)
 //     ?amount=500&type=58&payment=3&notes=Ref+12345    (add invoice note)
 //     ?amount=500&type=22&payment=6&vat_exemption_category=4  (non-EU services, Άρθρο 14)
 //
 //   Live invoice (submitted to AADE):
-//     ?amount=500&type=58&payment=6&afm=007690144&live=1
+//     ?amount=500&type=58&payment=6&afm=800764388&live=1
 //
 //   Credit note (auto-fills from original invoice):
 //     ?type=61&payment=3&correlated_mark=400013026753577
