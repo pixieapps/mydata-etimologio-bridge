@@ -105,11 +105,11 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //   // Each invoice: ['no','mark','type','issue_date','series','aa','counterpart','net','vat','total']
 //
 //   // Fetch a single issued invoice by MARK
-//   $inv = etimologio_invoice($ch, '400012848306927');
+//   $inv = etimologio_invoice($ch, '400012848386927');
 //   // Returns: ['success'=>true, 'mark','type','issue_date','series','aa','counterpart','net','vat','total']
 //
 //   // Get PDF of issued invoice as base64
-//   $pdf = etimologio_pdf($ch, '400012848306927');
+//   $pdf = etimologio_pdf($ch, '400012848386927');
 //   // Returns: ['success'=>true, 'mark','filename','mime','size','pdf_base64']
 //
 //   // Create a DRAFT invoice (safe — nothing sent to AADE)
@@ -165,7 +165,7 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //       'afm'     => '800764388',
 //       'live'    => true,
 //   ]);
-//   // Returns: ['success'=>true, 'live'=>true, 'mark'=>'400012848306927', 'aa','qrUrl','type','series','amount_net','amount_vat','amount_total']
+//   // Returns: ['success'=>true, 'live'=>true, 'mark'=>'400012848386927', 'aa','qrUrl','type','series','amount_net','amount_vat','amount_total']
 //
 //   // Credit note — auto-fetches amount and customer from original invoice
 //   $result = etimologio_create($ch, [
@@ -263,13 +263,13 @@ if (empty($ETIMOLOGIO_CONFIG)) {
 //     ?invoices=1&date_from=01/01/2026&afm=800764388
 //
 //   Invoice lookup by MARK:
-//     ?mark_lookup=400012848306927
+//     ?mark_lookup=400012848386927
 //
 //   PDF by MARK (JSON with base64):
-//     ?mark=400012848306927
+//     ?mark=400012848386927
 //
 //   PDF by MARK (raw binary, opens in browser):
-//     ?mark=400012848306927&pdf_raw=1
+//     ?mark=400012848386927&pdf_raw=1
 //
 //   Draft invoice:
 //     ?amount=500&type=58&payment=3
