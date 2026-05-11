@@ -231,7 +231,7 @@ $result = etimologio_create($ch, [
 $result = etimologio_create($ch, [
     'type'            => '61',
     'payment'         => 3,
-    'correlated_mark' => '400013026753577',
+    'correlated_mark' => '400013026757877',
     'live'            => true,
 ]);
 
