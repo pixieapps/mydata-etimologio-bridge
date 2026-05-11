@@ -175,14 +175,14 @@ require_once 'e-timologio.php';
 $ch = etimologio_login();
 
 // Taxisnet lookup (read-only)
-$info = etimologio_taxisnet($ch, '007690144');
+$info = etimologio_taxisnet($ch, '800764388');
 // Returns: ['name', 'address', 'city', 'zip', 'doy'] or null
 
 // Find or auto-create a Greek customer
-$customer = etimologio_customer($ch, '007690144');
+$customer = etimologio_customer($ch, '800764388');
 
 // Full customer record including email and phone
-$full = etimologio_customer_full($ch, '007690144');
+$full = etimologio_customer_full($ch, '800764388');
 
 // List all saved customers
 $customers = etimologio_customers($ch);
@@ -199,7 +199,7 @@ $series = etimologio_series_for_type('58');
 // List issued invoices by date range
 $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026');
 $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '58');        // filter by type
-$invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '', '007690144'); // filter by AFM
+$invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '', '800764388'); // filter by AFM
 
 // Fetch single invoice by MARK
 $inv = etimologio_invoice($ch, '400012848306927');
@@ -221,7 +221,7 @@ $result = etimologio_create($ch, [
     'amount'               => 1000.00,
     'type'                 => '20',
     'payment'              => 5,
-    'afm'                  => '007690144',
+    'afm'                  => '800764388',
     'withholding_category' => 3,
     'withholding_amount'   => 200.00,
     'live'                 => true,
