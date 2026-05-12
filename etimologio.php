@@ -1,348 +1,129 @@
 <?php
-// Clear OPcache on every request so file changes take effect immediately.
-// Safe to leave permanently — has negligible performance impact on low-traffic endpoints.
-if (function_exists('opcache_reset')) {
-    opcache_reset();
-}
-
 // ============================================================================
-// e-Timologio PHP Library + HTTP API — ΑΑΔΕ myDATA
+// e-Timologio API — ΑΑΔΕ myDATA
 // ============================================================================
 //
-// DUAL-MODE: This file works as both a PHP library (include/require) and as a
-// standalone HTTP API endpoint. When included by another script, only the
-// functions and config are loaded — nothing executes. When called directly
-// via HTTP, the API entry point at the bottom handles the request.
+// CUSTOMER LOOKUP (find or auto-create in e-timologio):
+//   ?afm=801725430
+//
+// DRAFT INVOICE (saved to Προσωρινά Αποθηκευμένα, NOT submitted to AADE):
+//   ?amount=500&type=58
+//
+// DRAFT INVOICE + CUSTOMER (auto find/create customer first):
+//   ?afm=801725430&amount=500&type=58
+//
+// FULL EXAMPLE:
+//   ?afm=801725430&amount=500&type=58&payment=6&name=ACME SA&city=Athens&zip=10432
+//
+// ----------------------------------------------------------------------------
+// PARAMETERS
+// ----------------------------------------------------------------------------
+//
+// afm         Greek tax number — 9 digits for GR clients (optional for invoices,
+//             required for customer lookup). For type 22 (non-EU), pass the
+//             foreign VAT string (e.g. afm=FOREIGN) or leave empty.
+//             If provided for GR clients, customer is auto found/created.
+//
+// amount      Net amount in EUR, excluding VAT (required for invoice).
+//             VAT 24% is calculated automatically except for type 22 (0% VAT).
+//             e.g. amount=500 → net 500€ + VAT 120€ = total 620€
+//
+// type        Invoice type code (required for invoice):
+//               20  → 2.1  Τιμολόγιο Παροχής Υπηρεσιών (B2B, GR)
+//               21  → 2.2  Τιμολόγιο Παροχής / Ενδοκοινοτική (B2B, EU)
+//               22  → 2.3  Τιμολόγιο Παροχής Υπηρεσιών - Τρίτες Χώρες (0% ΦΠΑ)
+//               57  → 11.1 ΑΛΠ (Απόδειξη Λιανικής Πώλησης)
+//               58  → 11.2 ΑΠΥ (Απόδειξη Παροχής Υπηρεσιών)
+//
+// payment     Payment method code (optional, default 3):
+//               1   → Επαγγελματικός Λογαριασμός Πληρωμών Ημεδαπής
+//               2   → Επαγγελματικός Λογαριασμός Πληρωμών Αλλοδαπής
+//               3   → Μετρητά
+//               4   → Επιταγή
+//               5   → Επί πιστώσει
+//               6   → Web Banking
+//               7   → POS / e-POS
+//               8   → Άμεσες Πληρωμές IRIS
+//
+// name        Customer name (optional — auto-populated from Taxisnet if GR afm given,
+//             or from e-timologio database if foreign afm given)
+// address     Customer street address (optional — auto-populated as above)
+// city        Customer city (optional — auto-populated as above)
+// zip         Customer postal code (optional — auto-populated as above)
+// country     Customer country ISO code (optional, default GR)
+//             Auto-populated from e-timologio database for foreign clients
+// branch      Customer branch number (optional, default 0)
+// description Product/service code from your e-timologio catalogue
+//             (optional, default ΥΠ001)
+//
+// withholding_category  Withholding tax category (optional, B2B invoices only):
+//               1   → Περ. β' - Τόκοι 15%
+//               2   → Περ. γ' - Δικαιώματα 20%
+//               3   → Περ. δ' - Αμοιβές Συμβούλων Διοίκησης 20%
+//               4   → Περ. δ' - Τεχνικά Έργα 3%
+//               7   → Παροχή Υπηρεσιών 8%
+//
+// withholding_amount    Withheld tax amount in EUR (required if withholding_category set)
+//
+// mark        MARK number of an already-issued invoice (optional).
+//             If provided, all other parameters are ignored and the PDF
+//             of that invoice is returned directly in the browser.
+//
+// live        Set to 1 to actually submit the invoice to AADE and get a MARK.
+//             Without this parameter, invoice is saved as draft only (safe for testing).
+//             e.g. &live=1
+//
+// ----------------------------------------------------------------------------
+// EXAMPLES
+// ----------------------------------------------------------------------------
+//
+// Anonymous cash receipt:
+//   ?amount=500&type=58&payment=3
+//
+// Web banking receipt with customer name and address:
+//   ?amount=500&type=58&payment=6&name=PAPADOPOULOS GEORGIOS&address=ΣΤΑΔΙΟΥ 10&city=ΑΘΗΝΑ&zip=10564
+//
+// Full receipt with AFM (auto-creates customer, auto-populates name/address):
+//   ?afm=801725430&amount=500&type=58&payment=6
+//
+// Service invoice (τιμολόγιο) to business client:
+//   ?afm=801725430&amount=1000&type=20&payment=5&description=ΥΠ002
+//
+// Service invoice with withholding tax (20% on fees):
+//   ?afm=801725430&amount=1000&type=20&payment=5&withholding_category=3&withholding_amount=200
+//
+// Invoice to non-EU client (0% VAT, auto-populated from e-timologio database):
+//   ?amount=1000&type=22&payment=6&afm=FOREIGN
+//
+// Retrieve PDF of issued invoice by MARK:
+//   ?mark=400000000000001
+//
+// Retrieve PDF as raw binary (browser-friendly):
+//   ?mark=400000000000001&pdf_raw=1
+//
+// LIVE invoice (actually submitted to AADE, MARK assigned):
+//   ?afm=801725430&amount=500&type=58&payment=6&live=1
 //
 // ============================================================================
-// SECTION 1 — CONFIGURATION
-// ============================================================================
-//
-// Edit the values below to match your e-timologio account credentials.
-// These are the only values you need to change when deploying.
-//
-// Cookie file and caches are stored in the files/ subdirectory alongside this script:
-//   Cookie:        files/etimologio_{company_vat}.txt
-//   Products cache: files/etimologio_products_{company_vat}.json
-//   Series cache:   files/etimologio_series_{company_vat}.json
-//
-// To populate the product cache (auto-built on first use; can also trigger manually):
-//   GET ?products=1
-// To populate the series cache (auto-built on first use; can also trigger manually):
-//   GET ?categories=1
-// After that, both are served from cache — no API call needed.
-//
-// ============================================================================
 
-// Default config — only applied when NOT already set by config.php loaded before this file.
-// When used as a library (require_once 'e-timologio.php' after require_once 'config.php'),
-// the values from config.php are preserved and these defaults are ignored.
-if (empty($ETIMOLOGIO_CONFIG)) {
-    $ETIMOLOGIO_CONFIG = [
-        'base_url'         => 'https://mydata.aade.gr/timologio',
-        'company_vat'      => 'CHANGE_ME',
-        'username'         => 'CHANGE_ME',
-        'subscription_key' => 'CHANGE_ME',
-        'company_name'     => 'CHANGE_ME',
+require __DIR__ . '/config.php';
 
-        // Invoice types with zero VAT — fallback when product has no VAT info
-        'zero_vat_types'   => ['22'],
-    ];
+// --- RESPONSE HELPERS --------------------------------------------------------
+
+function jsonResponse(array $data, int $status = 200): void {
+    http_response_code($status);
+    header('Content-Type: application/json');
+    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
 }
 
-// ============================================================================
-// SECTION 2 — LIBRARY USAGE GUIDE
-// ============================================================================
-//
-// ── AS A PHP LIBRARY ────────────────────────────────────────────────────────
-//
-//   require_once 'e_timologio.php';
-//
-//   // Always start with login — reuse $ch across multiple calls
-//   $ch = etimologio_login();
-//
-//   // Taxisnet lookup (read-only, nothing saved)
-//   $info = etimologio_taxisnet($ch, '800764388');
-//   // Returns: ['name'=>..., 'address'=>..., 'city'=>..., 'zip'=>..., 'doy'=>...]
-//   // Returns: null if AFM not found
-//
-//   // Find or auto-create a Greek customer
-//   $customer = etimologio_customer($ch, '800764388');
-//   // Returns: ['success'=>true, 'status'=>'found'|'created', 'code'=>..., 'vat'=>..., 'info'=>[...]]
-//
-//   // Full customer lookup — DB first, Taxisnet auto-create for Greek, null for unknown foreign
-//   // Returns all fields including email, zip, phone (fetched from EditCustomer page)
-//   $full = etimologio_customer_full($ch, '800764388');
-//   // Returns: ['vat','name','address','city','zip','email','phone','country','code'] or null
-//
-//   // List all saved customers
-//   $customers = etimologio_customers($ch);
-//   // Returns: ['success'=>true, 'count'=>N, 'customers'=>[['no','code','type','afm','name','address','city'],...]]
-//
-//   // List all products/services (plain — from cache if available)
-//   $products = etimologio_products($ch);
-//   // Returns: ['success'=>true, 'count'=>N, 'products'=>[['no','type','category','code','description','unit_price','vat_pct','unit'],...]]
-//
-//   // Fetch single product with VAT rate and classifications (queries AADE live)
-//   $product = etimologio_product($ch, 'ΥΠ001', '58');
-//   // Returns: ['success'=>true, 'code','description','vat_category','vat_rate','classifications'=>[...],'raw'=>...]
-//   // $invoiceType: '58'=ΑΠΥ, '20'=ΤΠΥ, '22'=non-EU
-//
-//   // List invoice categories configured in your account (also writes series cache)
-//   $categories = etimologio_categories($ch);
-//   // Returns: ['success'=>true, 'count'=>N, 'categories'=>[['no','type','id','series','aa_start','description'],...]]
-//
-//   // Get all series for a given invoice type (reads from cache — no network call)
-//   $series = etimologio_series_for_type('58');
-//   // Returns: [['no','type','id','series','aa_start','description'], ...]  or [] if cache missing
-//   // Accepts: '1','20','21','22','57','58','61'
-//
-//   // List issued invoices by date range
-//   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026');
-//   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '58');          // filter by type
-//   $invoices = etimologio_invoices($ch, '01/01/2026', '30/04/2026', '', '800764388'); // filter by AFM
-//   // Returns: ['success'=>true, 'count'=>N, 'date_from'=>..., 'date_to'=>..., 'invoices'=>[...]]
-//   // Each invoice: ['no','mark','type','issue_date','series','aa','counterpart','net','vat','total']
-//
-//   // Fetch a single issued invoice by MARK
-//   $inv = etimologio_invoice($ch, '400012848386927');
-//   // Returns: ['success'=>true, 'mark','type','issue_date','series','aa','counterpart','net','vat','total']
-//
-//   // Get PDF of issued invoice as base64
-//   $pdf = etimologio_pdf($ch, '400012848386927');
-//   // Returns: ['success'=>true, 'mark','filename','mime','size','pdf_base64']
-//
-//   // Create a DRAFT invoice (safe — nothing sent to AADE)
-//   $result = etimologio_create($ch, [
-//       'amount'      => 500.00,   // net amount, VAT calculated automatically
-//       'type'        => '58',     // see invoice type codes below
-//       'payment'     => 6,        // see payment codes below
-//       'description' => 'ΥΠ001', // product code from your catalogue
-//       'language'    => 'el',     // 'el' or 'en'
-//   ]);
-//   // Returns: ['success'=>true, 'live'=>false, 'temp_id'=>..., 'type','series','amount_net','amount_vat','amount_total']
-//
-//   // Draft invoice with Greek customer (auto-lookup Taxisnet, creates if not saved)
-//   $result = etimologio_create($ch, [
-//       'amount'      => 1000.00,
-//       'type'        => '20',
-//       'payment'     => 5,
-//       'afm'         => '800764388',
-//       'description' => 'ΥΠ001Τ',
-//       'withholding_category' => 3,
-//       'withholding_amount'   => 200.00,
-//   ]);
-//
-//   // Draft invoice with manual customer data (no AFM lookup)
-//   $result = etimologio_create($ch, [
-//       'amount'  => 500.00,
-//       'type'    => '58',
-//       'payment' => 6,
-//       'name'    => 'JOHN SMITH',
-//       'address' => '123 MAIN ST',
-//       'city'    => 'NEW YORK',
-//       'zip'     => '10001',
-//       'country' => 'US',
-//       'language'=> 'en',
-//   ]);
-//
-//   // Non-EU invoice (0% VAT)
-//   $result = etimologio_create($ch, [
-//       'amount'      => 1000.00,
-//       'type'        => '22',
-//       'payment'     => 6,
-//       'name'        => 'ACME CORP',
-//       'country'     => 'US',
-//       'description' => 'ΥΠ000',
-//       'language'    => 'en',
-//   ]);
-//
-//   // LIVE invoice (submitted to AADE, MARK assigned)
-//   $result = etimologio_create($ch, [
-//       'amount'  => 500.00,
-//       'type'    => '58',
-//       'payment' => 6,
-//       'afm'     => '800764388',
-//       'live'    => true,
-//   ]);
-//   // Returns: ['success'=>true, 'live'=>true, 'mark'=>'400012848386927', 'aa','qrUrl','type','series','amount_net','amount_vat','amount_total']
-//
-//   // Credit note — auto-fetches amount and customer from original invoice
-//   $result = etimologio_create($ch, [
-//       'type'            => '61',
-//       'payment'         => 3,
-//       'correlated_mark' => '400013026753577',
-//   ]);
-//
-//   // Optional params available on all etimologio_create() calls:
-//   //   'series'  => 'B'  — override series letter (validated against cache; omit to auto-resolve)
-//   //   'notes'   => '...' — free-text note printed on the invoice (omit or '' for none)
-//   //   'vat_exemption_category' => 4  — vatExemptionCategory code (required when isZeroVat).
-//   //     Auto-resolved per invoice type — only pass to override:
-//   //     type '22' (non-EU services) → 4 (Άρθρο 14, τόπος παροχής υπηρεσιών) ← default
-//   //     type '21' (EU services)     → 4 (Άρθρο 14)
-//   //     type '1'  (goods, non-EU)   → 3 (Άρθρο 13, τόπος παράδοσης αγαθών); pass 14 for EU intra-community goods
-//   //     type '57','58' (ΑΛΠ/ΑΠΥ 0%)→ 4 (Άρθρο 14, fallback)
-//
-//   // Override config at runtime (e.g. different credentials)
-//   $ch = etimologio_login([
-//       'company_vat'      => '999999999',
-//       'username'         => 'otheruser',
-//       'subscription_key' => 'abc123...',
-//   ]);
-//
-//   // Always close the session when done
-//   etimologio_close($ch);
-//
-// ── INVOICE TYPE CODES ───────────────────────────────────────────────────────
-//
-//   These are e-timologio's internal type codes (not the myDATA dot-notation).
-//   e-timologio translates them to the corresponding myDATA types internally.
-//   Only the subtypes below are currently exposed by e-timologio's UI/API.
-//   Additional subtypes (e.g. 1.2 non-EU goods, 1.3 EU goods, 2.4 supplementary)
-//   would require separate e-timologio category configuration if needed.
-//
-//   '1'  → 1.1  Τιμολόγιο Πώλησης (B2B, domestic goods/αγαθά)
-//   '20' → 2.1  Τιμολόγιο Παροχής Υπηρεσιών (B2B, GR services)
-//   '21' → 2.2  Τιμολόγιο Παροχής / Ενδοκοινοτική (B2B, EU services)
-//   '22' → 2.3  Τιμολόγιο Παροχής Τρίτων Χωρών (non-EU services, 0% VAT)
-//   '57' → 11.1 ΑΛΠ (Απόδειξη Λιανικής Πώλησης)
-//   '58' → 11.2 ΑΠΥ (Απόδειξη Παροχής Υπηρεσιών)
-//   '61' → 11.4 Πιστωτικό Στοιχείο Λιανικής Συσχετιζόμενο (requires correlated_mark)
-//
-// ── PAYMENT METHOD CODES ─────────────────────────────────────────────────────
-//
-//   1 → Επαγγελματικός Λογαριασμός Πληρωμών Ημεδαπής
-//   2 → Επαγγελματικός Λογαριασμός Πληρωμών Αλλοδαπής
-//   3 → Μετρητά
-//   4 → Επιταγή
-//   5 → Επί Πιστώσει
-//   6 → Web Banking
-//   7 → POS / e-POS
-//   8 → Άμεσες Πληρωμές IRIS
-//
-// ── WITHHOLDING TAX CATEGORIES ───────────────────────────────────────────────
-//
-//   1 → Περ. β' - Τόκοι 15%
-//   2 → Περ. γ' - Δικαιώματα 20%
-//   3 → Περ. δ' - Αμοιβές Συμβούλων Διοίκησης 20%
-//   4 → Περ. δ' - Τεχνικά Έργα 3%
-//   7 → Παροχή Υπηρεσιών 8%
-//
-// ── AS AN HTTP API ───────────────────────────────────────────────────────────
-//
-//   Call this file directly via HTTP — all parameters via GET or POST.
-//
-//   Taxisnet lookup (read-only, no customer saved):
-//     ?taxisnet=800764388
-//
-//   Customer find/create (Greek 9-digit AFM only — Taxisnet lookup):
-//     ?afm=800764388
-//
-//   List products (served from cache; auto-builds full cache on first run):
-//     ?products=1
-//
-//   Force full cache rebuild:
-//     ?products=1&refresh=1
-//
-//   Single product with classifications:
-//     ?product_lookup=ΥΠ001&inv_type=58
-//
-//   List invoice categories (fetches live, writes series cache):
-//     ?categories=1
-//
-//   Get series for a specific invoice type (from cache — no network call):
-//     ?series_for_type=58
-//
-//   List customers:
-//     ?customers=1
-//
-//   List invoices (date_from defaults to 1st of month, date_to defaults to today):
-//     ?invoices=1&date_from=01/01/2026&date_to=30/04/2026
-//     ?invoices=1&date_from=01/01/2026&invoice_type=58
-//     ?invoices=1&date_from=01/01/2026&afm=800764388
-//
-//   Invoice lookup by MARK:
-//     ?mark_lookup=400012848386927
-//
-//   PDF by MARK (JSON with base64):
-//     ?mark=400012848386927
-//
-//   PDF by MARK (raw binary, opens in browser):
-//     ?mark=400012848386927&pdf_raw=1
-//
-//   Draft invoice:
-//     ?amount=500&type=58&payment=3
-//     ?amount=500&type=58&payment=6&name=JOHN+SMITH&country=US&language=en
-//     ?amount=1000&type=20&payment=5&afm=800764388&description=ΥΠ001Τ
-//     ?amount=1000&type=20&payment=5&afm=800764388&withholding_category=3&withholding_amount=200
-//     ?amount=500&type=58&payment=3&series=B           (override series)
-//     ?amount=500&type=58&payment=3&notes=Ref+12345    (add invoice note)
-//     ?amount=500&type=22&payment=6&vat_exemption_category=4  (non-EU services, Άρθρο 14)
-//
-//   Live invoice (submitted to AADE):
-//     ?amount=500&type=58&payment=6&afm=800764388&live=1
-//
-//   Credit note (auto-fills from original invoice):
-//     ?type=61&payment=3&correlated_mark=400013026753577
-//     ?type=61&payment=3&correlated_mark=400013026753577&language=en
-//
-// ============================================================================
-// SECTION 3 — INTERNAL HELPERS (prefix: _etim_)
-// ============================================================================
-
-function _etim_config(): array {
-    global $ETIMOLOGIO_CONFIG;
-    return $ETIMOLOGIO_CONFIG;
+function jsonError(string $message, int $status = 400): void {
+    jsonResponse(['success' => false, 'error' => $message], $status);
 }
 
-function _etim_baseUrl(): string {
-    return _etim_config()['base_url'];
-}
+// --- CURL HELPERS ------------------------------------------------------------
 
-function _etim_companyVat(): string {
-    return _etim_config()['company_vat'];
-}
-
-function _etim_isZeroVat(string $invoiceType): bool {
-    return in_array($invoiceType, _etim_config()['zero_vat_types']);
-}
-
-function _etim_files_dir(): string {
-    return __DIR__ . '/files';
-}
-
-function _etim_cache_path(): string {
-    return _etim_files_dir() . '/etimologio_products_' . _etim_companyVat() . '.json';
-}
-
-function _etim_cache_read(): ?array {
-    $path = _etim_cache_path();
-    if (!file_exists($path)) return null;
-    $data = json_decode(file_get_contents($path), true);
-    return is_array($data) ? $data : null;
-}
-
-function _etim_cache_write(array $data): void {
-    file_put_contents(_etim_cache_path(), json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-}
-
-function _etim_series_cache_path(): string {
-    return _etim_files_dir() . '/etimologio_series_' . _etim_companyVat() . '.json';
-}
-
-function _etim_series_cache_read(): ?array {
-    $path = _etim_series_cache_path();
-    if (!file_exists($path)) return null;
-    $data = json_decode(file_get_contents($path), true);
-    return is_array($data) ? $data : null;
-}
-
-function _etim_series_cache_write(array $data): void {
-    file_put_contents(_etim_series_cache_path(), json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-}
-
-function _etim_get(\CurlHandle $ch, string $url): string {
+function curlGet(\CurlHandle $ch, string $url): string {
     curl_setopt($ch, CURLOPT_URL,            $url);
     curl_setopt($ch, CURLOPT_HTTPGET,        true);
     curl_setopt($ch, CURLOPT_POST,           false);
@@ -350,7 +131,7 @@ function _etim_get(\CurlHandle $ch, string $url): string {
     return curl_exec($ch);
 }
 
-function _etim_post(\CurlHandle $ch, string $url, array $fields): string {
+function curlPost(\CurlHandle $ch, string $url, array $fields): string {
     curl_setopt($ch, CURLOPT_URL,            $url);
     curl_setopt($ch, CURLOPT_POST,           true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
@@ -358,7 +139,7 @@ function _etim_post(\CurlHandle $ch, string $url, array $fields): string {
     return curl_exec($ch);
 }
 
-function _etim_postInvoice(\CurlHandle $ch, string $url, array $data): string {
+function curlPostInvoice(\CurlHandle $ch, string $url, array $data): string {
     curl_setopt($ch, CURLOPT_URL,            $url);
     curl_setopt($ch, CURLOPT_POST,           true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
@@ -371,182 +152,78 @@ function _etim_postInvoice(\CurlHandle $ch, string $url, array $data): string {
     return curl_exec($ch);
 }
 
-function _etim_token(\CurlHandle $ch, string $url): string {
-    $html = _etim_get($ch, $url);
+function getToken(\CurlHandle $ch, string $url): string {
+    $html = curlGet($ch, $url);
     preg_match('/name="__RequestVerificationToken".*?value="([^"]+)"/', $html, $m);
     return $m[1] ?? '';
 }
 
-function _etim_parseCells(string $rowHtml): array {
-    if (!preg_match_all('/<td[^>]*>(.*?)<\/td>/s', $rowHtml, $m)) return [];
-    return array_map(function($c) {
-        return html_entity_decode(trim(strip_tags($c)), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-    }, $m[1]);
-}
+// --- LOGIN -------------------------------------------------------------------
 
-function _etim_parseRows(string $html): array {
-    preg_match_all('/<tr[^>]*>(.*?)<\/tr>/s', $html, $m);
-    return $m[1] ?? [];
-}
+function login(): \CurlHandle {
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_COOKIEJAR,      COOKIE_FILE);
+    curl_setopt($ch, CURLOPT_COOKIEFILE,     COOKIE_FILE);
+    curl_setopt($ch, CURLOPT_USERAGENT,      'Mozilla/5.0');
 
-function _etim_parseInvoiceRow(array $cells): array {
-    return [
-        'no'          => (int) trim($cells[0]),
-        'mark'        => trim($cells[1]),
-        'type'        => trim($cells[2]),
-        'issue_date'  => substr(trim($cells[3]), -10), // strip hidden AADE date prefix
-        'series'      => trim($cells[5]),
-        'aa'          => trim($cells[6]),
-        'counterpart' => trim($cells[7]),
-        'net'         => trim($cells[8]),
-        'vat'         => trim($cells[9]),
-        'total'       => trim($cells[10]),
-    ];
-}
+    $token = getToken($ch, BASE_URL . '/Account/Login');
+    if (!$token) jsonError('Could not reach e-timologio', 503);
 
-function _etim_searchInvoices(\CurlHandle $ch, array $params): string {
-    $base     = _etim_baseUrl();
-    $listHtml = _etim_get($ch, $base . '/invoice/listinvoices');
-    preg_match('/name="__RequestVerificationToken".*?value="([^"]+)"/', $listHtml, $m);
-    $token = $m[1] ?? '';
-    if (!$token) return '';
-    curl_setopt($ch, CURLOPT_REFERER, $base . '/invoice/listinvoices');
-    return _etim_post($ch, $base . '/invoice/SearchInvoices', array_merge([
+    curlPost($ch, BASE_URL . '/Account/Login', [
+        'UserName'                   => USERNAME,
+        'VatNumber'                  => COMPANY_VAT,
+        'SubscriptionKey'            => SUBSCRIPTION_KEY,
+        'ReturnUrl'                  => '/timologio',
         '__RequestVerificationToken' => $token,
-        'invoiveFormat'              => '1',
-        'Mark'                       => '',
-        'IssueDateFrom'              => date('01/m/Y'),
-        'IssueDateTo'                => date('d/m/Y'),
-        'InvoiceType'                => '',
-        'Series'                     => '',
-        'BuyerVatNumber'             => '',
-        'searchCancelledInvoices'    => '0',
-        'searchB2GInvoices'          => 'false',
-        'btnSearch'                  => '',
-    ], $params));
+    ]);
+
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (strpos($finalUrl, 'Login') !== false) jsonError('Login failed', 401);
+
+    return $ch;
 }
 
-function _etim_search_customers_html(\CurlHandle $ch, string $vatFilter = '', int $maxRows = 10): string {
-    $base  = _etim_baseUrl();
-    $token = _etim_token($ch, $base . '/customer/ListCustomers');
-    return _etim_post($ch, $base . '/customer/SearchCustomers', [
+// --- 1. SEARCH CUSTOMER ------------------------------------------------------
+
+function searchCustomer(\CurlHandle $ch, string $afm): ?array {
+    $token = getToken($ch, BASE_URL . '/customer/ListCustomers');
+
+    $html = curlPost($ch, BASE_URL . '/customer/SearchCustomers', [
         'Language'                            => 'el-GR',
-        'CompanyVat'                          => _etim_companyVat(),
-        'CustomerVat'                         => $vatFilter,
+        'CompanyVat'                          => COMPANY_VAT,
+        'CustomerVat'                         => $afm,
         'CustomerCode'                        => '',
         'CustomerName'                        => '',
         'NextPartitionKey'                    => '',
         'NextRowKey'                          => '',
         'continuationToken.continuationToken' => '',
-        'totalFechedRows'                     => (string) $maxRows,
+        'totalFechedRows'                     => '10',
         'PrevCustomerCode'                    => '',
         'PrevCustomerVat'                     => '',
         'PrevCustomerName'                    => '',
         'btnSearch'                           => 'btnSearch',
         '__RequestVerificationToken'          => $token,
     ]);
-}
 
-function _etim_enrich_products(\CurlHandle $ch, array &$products): void {
-    foreach ($products as &$p) {
-        $allClassifications = [];
-        $vatCategory        = null;
-        $vatRate            = null;
-        foreach (['58', '57', '1', '20', '22'] as $invType) {
-            $detail = etimologio_product($ch, $p['code'], $invType);
-            if (!$detail['success']) continue;
-            if ($vatCategory === null) {
-                $vatCategory = $detail['vat_category'];
-                $vatRate     = $detail['vat_rate'];
-            }
-            foreach ($detail['classifications'] as $cl) {
-                if (!empty($cl['category'])) {
-                    $allClassifications[$invType][] = $cl;
-                }
-            }
-        }
-        $p['vat_category']    = $vatCategory;
-        $p['vat_rate']        = $vatRate;
-        $p['classifications'] = $allClassifications;
+    if (preg_match('/<td[^>]*>\s*' . preg_quote($afm, '/') . '\s*<\/td>/', $html)) {
+        preg_match('/<tr>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?' . preg_quote($afm, '/') . '/s', $html, $row);
+        return ['code' => $row[2] ?? null, 'vat' => $afm];
     }
-    unset($p);
+    return null;
 }
 
-// HTTP-only response helpers — only used in standalone mode
-function _etim_jsonResponse(array $data, int $status = 200): void {
-    http_response_code($status);
-    header('Content-Type: application/json');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
-    exit;
-}
+// --- 2. GET FROM TAXISNET ----------------------------------------------------
 
-function _etim_jsonError(string $message, int $status = 400): void {
-    _etim_jsonResponse(['success' => false, 'error' => $message], $status);
-}
-
-// ============================================================================
-// SECTION 4 — PUBLIC API FUNCTIONS (prefix: etimologio_)
-// ============================================================================
-
-/**
- * Login to e-timologio and return a cURL session handle.
- * Reuse $ch across multiple calls; close with etimologio_close() when done.
- *
- * @param  array|null  $config  Override any config keys (optional)
- * @return \CurlHandle
- * @throws \RuntimeException on login failure
- */
-function etimologio_login(?array $config = null): \CurlHandle {
-    global $ETIMOLOGIO_CONFIG;
-    if ($config !== null) $ETIMOLOGIO_CONFIG = array_merge($ETIMOLOGIO_CONFIG, $config);
-
-    $cfg  = _etim_config();
-    $base = $cfg['base_url'];
-
-    $ch = curl_init();
-    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-    $cookiePath = _etim_files_dir() . '/etimologio_' . $cfg['company_vat'] . '.txt';
-    curl_setopt($ch, CURLOPT_COOKIEJAR,      $cookiePath);
-    curl_setopt($ch, CURLOPT_COOKIEFILE,     $cookiePath);
-    curl_setopt($ch, CURLOPT_USERAGENT,      'Mozilla/5.0');
-
-    $token = _etim_token($ch, $base . '/Account/Login');
-    if (!$token) throw new \RuntimeException('Could not reach e-timologio');
-
-    _etim_post($ch, $base . '/Account/Login', [
-        'UserName'                   => $cfg['username'],
-        'VatNumber'                  => $cfg['company_vat'],
-        'SubscriptionKey'            => $cfg['subscription_key'],
-        'ReturnUrl'                  => '/timologio',
-        '__RequestVerificationToken' => $token,
-    ]);
-
-    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
-    if (strpos($finalUrl, 'Login') !== false) throw new \RuntimeException('Login failed — check credentials');
-
-    return $ch;
-}
-
-/**
- * Close and release a cURL session.
- */
-function etimologio_close(\CurlHandle $ch): void {
-    curl_close($ch);
-}
-
-/**
- * Look up a Greek AFM on Taxisnet via e-timologio.
- * Read-only — does NOT save the customer to your database.
- *
- * @return array|null  ['name', 'address', 'city', 'zip', 'doy'] or null if not found
- */
-function etimologio_taxisnet(\CurlHandle $ch, string $afm): ?array {
-    $response = _etim_get($ch, _etim_baseUrl() . '/Customer/GetCustomerByTaxis?' . http_build_query([
-        'companyVat'  => _etim_companyVat(),
+function getFromTaxisnet(\CurlHandle $ch, string $afm): ?array {
+    $response = curlGet($ch, BASE_URL . '/Customer/GetCustomerByTaxis?' . http_build_query([
+        'companyVat'  => COMPANY_VAT,
         'customerVat' => $afm,
     ]));
+
     $data = json_decode($response, true);
     if (!$data || !empty($data['errorDescr'])) return null;
+
     return [
         'name'    => $data['n']  ?? '',
         'address' => $data['a']  ?? '',
@@ -556,40 +233,37 @@ function etimologio_taxisnet(\CurlHandle $ch, string $afm): ?array {
     ];
 }
 
-/**
- * Find an existing customer by AFM, or auto-create from Taxisnet (Greek AFMs only).
- *
- * @return array  ['success', 'status' ('found'|'created'|'error'), 'code', 'vat', 'info']
- */
-function etimologio_customer(\CurlHandle $ch, string $afm): array {
-    $base  = _etim_baseUrl();
-    $cvat  = _etim_companyVat();
+// --- 2b. GET CUSTOMER FROM E-TIMOLOGIO DATABASE (for foreign clients) --------
 
-    $html = _etim_search_customers_html($ch, $afm, 10);
+function getCustomerFromDatabase(\CurlHandle $ch, string $term, string $invoiceType): ?array {
+    $url = BASE_URL . '/Customer/GetProposedCustomersByName/?' . http_build_query([
+        'companyVat' => COMPANY_VAT,
+        'invType'    => $invoiceType,
+        'term'       => $term,
+    ]);
+    $response = curlGet($ch, $url);
+    $data = json_decode($response, true);
+    if (empty($data[0])) return null;
 
-    $existingCode = null;
-    if (preg_match('/<td[^>]*>\s*' . preg_quote($afm, '/') . '\s*<\/td>/', $html)) {
-        preg_match('/<tr>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?' . preg_quote($afm, '/') . '/s', $html, $row);
-        $existingCode = $row[2] ?? null;
-    }
+    $c = $data[0];
+    return [
+        'name'    => $c['n']   ?? '',
+        'address' => $c['a']   ?? '',
+        'city'    => $c['ct']  ?? '',
+        'zip'     => $c['z']   ?? '',
+        'country' => $c['cod'] ?? '',
+        'vat'     => $c['v']   ?? '',
+    ];
+}
 
-    // Always fetch full info from Taxisnet
-    $info = etimologio_taxisnet($ch, $afm) ?? [];
+// --- 3. CREATE CUSTOMER ------------------------------------------------------
 
-    if ($existingCode !== null) {
-        return ['success' => true, 'status' => 'found', 'code' => $existingCode, 'vat' => $afm, 'info' => $info];
-    }
+function createCustomer(\CurlHandle $ch, string $afm, array $info): bool {
+    $token = getToken($ch, BASE_URL . '/customer/NewCustomer');
+    if (!$token) return false;
 
-    if (empty($info)) {
-        return ['success' => false, 'status' => 'error', 'error' => 'AFM not found in Taxisnet'];
-    }
-
-    // Create the customer
-    $createToken = _etim_token($ch, $base . '/customer/NewCustomer');
-    if (!$createToken) return ['success' => false, 'status' => 'error', 'error' => 'Could not get creation token'];
-
-    _etim_post($ch, $base . '/customer/NewCustomer', [
-        'CompanyVAT'                 => $cvat,
+    curlPost($ch, BASE_URL . '/customer/NewCustomer', [
+        'CompanyVAT'                 => COMPANY_VAT,
         'Language'                   => 'el-GR',
         'OldCustomerVat'             => $afm,
         'CustomerType'               => '2',
@@ -606,480 +280,1497 @@ function etimologio_customer(\CurlHandle $ch, string $afm): array {
         'CustomerEmail'              => '',
         'CustomerPhone1'             => '',
         'CustomerPhone2'             => '',
-        '__RequestVerificationToken' => $createToken,
+        '__RequestVerificationToken' => $token,
     ]);
 
-    if (strpos(curl_getinfo($ch, CURLINFO_EFFECTIVE_URL), 'NewCustomer') !== false) {
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    return strpos($finalUrl, 'NewCustomer') === false;
+}
+
+// --- 3.5 CREATE PERSONAL CUSTOMER (without AFM) --------------------------------
+
+function createPersonalCustomer(
+    \CurlHandle $ch,
+    string $name,
+    string $address,
+    string $city,
+    string $zip,
+    string $doy = 'ΚΕΦΟΔΕ ΑΤΤΙΚΗΣ',
+    string $country = 'GR',
+    string $jobDescription = 'ΙΔΙΩΤΗΣ',
+    string $email = '',
+    string $phone1 = '',
+    string $phone2 = '',
+    string $language = 'el-GR',
+    bool $isB2GCustomer = false,
+    string $customerCode = '',
+    string $customerVat = '',
+    string $oldCustomerVat = ''
+): array {
+    if ($name === '' || $city === '' || $zip === '') {
+        return ['success' => false, 'error' => 'Name, city, and zip are required'];
+    }
+
+    $jobDescription = trim($jobDescription);
+    if ($jobDescription === '') {
+        $jobDescription = 'ΙΔΙΩΤΗΣ';
+    }
+
+    $token = getToken($ch, BASE_URL . '/customer/NewCustomer');
+    if (!$token) {
+        return ['success' => false, 'error' => 'Could not load customer form'];
+    }
+
+    // Mirror browser payload for personal customer creation (no VAT required)
+    $formData = [
+        'CompanyVAT'                 => COMPANY_VAT,
+        'Language'                   => $language,
+        'OldCustomerVat'             => $oldCustomerVat,
+        'CustomerType'               => '1',
+        'Country'                    => $country,
+        'isB2GCustomer'              => $isB2GCustomer ? 'true' : 'false',
+        'CustomerCode'               => $customerCode,
+        'CustomerVat'                => $customerVat,
+        'CustomerName'               => $name,
+        'JobDescription'             => $jobDescription,
+        'CustomerAddress'            => $address,
+        'CustomerCity'               => $city,
+        'CustomerZipCode'            => $zip,
+        'Doy'                        => $doy,
+        'CustomerEmail'              => $email,
+        'CustomerPhone1'             => $phone1,
+        'CustomerPhone2'             => $phone2,
+        '__RequestVerificationToken' => $token,
+    ];
+
+    $response = curlPost($ch, BASE_URL . '/customer/NewCustomer', $formData);
+    
+    // Check if response is JSON success response
+    $decoded = json_decode($response, true);
+    if (is_array($decoded) && isset($decoded['success'])) {
+        if ($decoded['success'] === true || $decoded['success'] === 'true') {
+            return ['success' => true, 'message' => 'Personal customer created successfully', 'data' => $decoded];
+        }
+    }
+
+    // Browser behavior: successful save returns 302 -> /Customer/ViewCustomer?... 
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (strpos($finalUrl, 'ViewCustomer') !== false) {
+        return [
+            'success'   => true,
+            'message'   => 'Personal customer created successfully',
+            'final_url' => $finalUrl,
+        ];
+    }
+
+    if (strpos($finalUrl, 'NewCustomer') === false) {
+        return [
+            'success'   => true,
+            'message'   => 'Personal customer created successfully',
+            'final_url' => $finalUrl,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error' => $decoded['error'] ?? 'Failed to create personal customer',
+        'raw' => substr((string)$response, 0, 200),
+    ];
+}
+
+// --- 4. FIND OR CREATE CUSTOMER ----------------------------------------------
+
+function findOrCreateCustomer(\CurlHandle $ch, string $afm): array {
+    $existing = searchCustomer($ch, $afm);
+    if ($existing) {
+        return ['success' => true, 'status' => 'found', 'code' => $existing['code'], 'vat' => $afm];
+    }
+
+    $info = getFromTaxisnet($ch, $afm);
+    if (!$info) {
+        return ['success' => false, 'status' => 'error', 'error' => 'AFM not found in Taxisnet'];
+    }
+
+    $created = createCustomer($ch, $afm, $info);
+    if (!$created) {
         return ['success' => false, 'status' => 'error', 'error' => 'Failed to create customer'];
     }
 
-    // Re-search to get the assigned code
-    $html2 = _etim_search_customers_html($ch, $afm, 10);
-    $newCode = null;
-    if (preg_match('/<tr>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?<td[^>]*>\s*(\d+)\s*<\/td>.*?' . preg_quote($afm, '/') . '/s', $html2, $row2)) {
-        $newCode = $row2[2] ?? null;
-    }
-
-    return ['success' => true, 'status' => 'created', 'code' => $newCode, 'vat' => $afm, 'info' => $info];
+    $new = searchCustomer($ch, $afm);
+    return ['success' => true, 'status' => 'created', 'code' => $new['code'] ?? null, 'vat' => $afm, 'info' => $info];
 }
 
-/**
- * Find a customer by VAT and return full details (name, address, city, zip, email, phone, country).
- * For Greek 9-digit AFMs: auto-creates in DB from Taxisnet if not found.
- * For foreign AFMs: returns null if not in DB.
- *
- * Fetches the EditCustomer page to get fields not exposed by the search list (zip, email, phone).
- *
- * @return array|null  ['vat','name','address','city','zip','email','phone','country','code'] or null
- */
-function etimologio_customer_full(\CurlHandle $ch, string $afm): ?array {
-    $base = _etim_baseUrl();
+// --- 4b. CUSTOMER/INVOICE LIST HELPERS --------------------------------------
 
-    // Helper: search DB and return [code, encrCode] for the matching AFM row, or null
-    $searchForAfm = function() use ($ch, $afm): ?array {
-        $html = _etim_search_customers_html($ch, $afm, 10);
+function htmlText(string $html): string {
+    $text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $text = preg_replace('/\s+/u', ' ', $text ?? '');
+    return trim((string)$text);
+}
 
-        // Find the row containing this AFM
-        foreach (_etim_parseRows($html) as $rowHtml) {
-            $cells = _etim_parseCells($rowHtml);
-            if (count($cells) < 7 || trim($cells[3]) !== $afm) continue;
-            $code = $cells[1] ?? '';
+function htmlInputValue(string $html, string $name): string {
+    $qName = preg_quote($name, '/');
 
-            // Extract EncrCustomerCode from the view/edit href in this row
-            $encrCode = null;
-            if (preg_match('/href="[^"]*(?:viewcustomer|EditCustomer)\?cd=([^"&]+)/i', $rowHtml, $m)) {
-                $encrCode = $m[1];
+    if (preg_match('/<input[^>]*name="' . $qName . '"[^>]*value="([^"]*)"[^>]*>/i', $html, $m)) {
+        return html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    if (preg_match('/<input[^>]*value="([^"]*)"[^>]*name="' . $qName . '"[^>]*>/i', $html, $m)) {
+        return html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    return '';
+}
+
+function extractTableRows(string $html, string $tableId): array {
+    $qId = preg_quote($tableId, '/');
+    if (!preg_match('/<table[^>]*id="' . $qId . '"[^>]*>(.*?)<\/table>/is', $html, $tableMatch)) {
+        return [];
+    }
+
+    $tableHtml = $tableMatch[1];
+    
+    // First try to extract from tbody (standard case)
+    if (preg_match('/<tbody[^>]*>(.*?)<\/tbody>/is', $tableHtml, $tbodyMatch)) {
+        $bodyContent = $tbodyMatch[1];
+    } else {
+        // Fallback: extract all tr elements directly from table
+        $bodyContent = $tableHtml;
+    }
+
+    preg_match_all('/<tr[^>]*>(.*?)<\/tr>/is', $bodyContent, $rowMatches);
+    $rows = [];
+    foreach ($rowMatches[1] as $rowHtml) {
+        preg_match_all('/<td[^>]*>(.*?)<\/td>/is', $rowHtml, $cellMatches);
+        if (!empty($cellMatches[1])) {
+            // Skip header rows (those with only 1-2 cells or containing <th> instead of <td>)
+            if (count($cellMatches[1]) > 2 && !preg_match('/<th/i', $rowHtml)) {
+                $rows[] = [
+                    'html'  => $rowHtml,
+                    'cells' => $cellMatches[1],
+                ];
+            }
+        }
+    }
+    return $rows;
+}
+
+function toSearchDate(string $value, string $fallback): string {
+    $value = trim($value);
+    if ($value === '') return $fallback;
+
+    if (preg_match('/^\d{2}\/\d{2}\/\d{4}$/', $value)) {
+        return $value;
+    }
+    if (preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $value, $m)) {
+        return $m[3] . '/' . $m[2] . '/' . $m[1];
+    }
+    return $fallback;
+}
+
+function listCustomers(
+    \CurlHandle $ch,
+    string $customerVat = '',
+    string $customerCode = '',
+    string $customerName = '',
+    bool $all = false,
+    int $pageSize = 1000,
+    int $maxPages = 20
+): array {
+    $pageSize = max(1, min(1000, $pageSize));
+    $maxPages = max(1, min(200, $maxPages));
+
+    $state = [
+        'NextPartitionKey'                    => '',
+        'NextRowKey'                          => '',
+        'continuationToken.continuationToken' => '',
+        'PrevCustomerCode'                    => '',
+        'PrevCustomerVat'                     => '',
+        'PrevCustomerName'                    => '',
+    ];
+
+    $token = getToken($ch, BASE_URL . '/customer/ListCustomers');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load customer search form'];
+    }
+
+    $seen = [];
+    $customers = [];
+    $pages = 0;
+
+    while ($pages < $maxPages) {
+        $pages++;
+
+        $html = curlPost($ch, BASE_URL . '/customer/SearchCustomers', [
+            'Language'                            => 'el-GR',
+            'CompanyVat'                          => COMPANY_VAT,
+            'CustomerVat'                         => $customerVat,
+            'CustomerCode'                        => $customerCode,
+            'CustomerName'                        => $customerName,
+            'NextPartitionKey'                    => $state['NextPartitionKey'],
+            'NextRowKey'                          => $state['NextRowKey'],
+            'continuationToken.continuationToken' => $state['continuationToken.continuationToken'],
+            'totalFechedRows'                     => (string)$pageSize,
+            'PrevCustomerCode'                    => $state['PrevCustomerCode'],
+            'PrevCustomerVat'                     => $state['PrevCustomerVat'],
+            'PrevCustomerName'                    => $state['PrevCustomerName'],
+            'btnSearch'                           => 'btnSearch',
+            '__RequestVerificationToken'          => $token,
+        ]);
+
+        $rows = extractTableRows($html, 'tblCustomers');
+        foreach ($rows as $row) {
+            $cols = array_map('htmlText', $row['cells']);
+            if (count($cols) < 7) continue;
+
+            $customer = [
+                'row_no'  => $cols[0],
+                'code'    => $cols[1],
+                'type'    => $cols[2],
+                'vat'     => $cols[3],
+                'name'    => $cols[4],
+                'address' => $cols[5],
+                'city'    => $cols[6],
+            ];
+
+            if (preg_match('/deleteCustomer\(\'([^\']+)\',\s*\'([^\']+)\'\)/', $row['html'], $m)) {
+                $customer['company_vat'] = $m[1];
+                $customer['delete_code'] = $m[2];
             }
 
-            return ['code' => $code, 'encrCode' => $encrCode];
+            $key = $customer['code'] . '|' . $customer['vat'];
+            if (!isset($seen[$key])) {
+                $seen[$key] = true;
+                $customers[] = $customer;
+            }
         }
-        return null;
-    };
 
-    // Step 1 — search DB
-    $match = $searchForAfm();
-
-    // Step 2 — not in DB: auto-create for Greek AFMs via Taxisnet, give up for foreign
-    if ($match === null) {
-        if (!preg_match('/^\d{9}$/', $afm)) return null;
-        $result = etimologio_customer($ch, $afm);
-        if (!$result['success']) return null;
-        $match = $searchForAfm(); // re-search to get EncrCustomerCode of the new record
-        if ($match === null) return null;
-    }
-
-    // Step 3 — fetch edit page for full field values
-    if (empty($match['encrCode'])) {
-        // No encrypted code — return what we have from search cells (no zip/email)
-        return [
-            'vat'     => $afm,
-            'name'    => '',
-            'address' => '',
-            'city'    => '',
-            'zip'     => '',
-            'email'   => '',
-            'phone'   => '',
-            'country' => '',
-            'code'    => $match['code'],
+        $nextState = [
+            'NextPartitionKey'                    => htmlInputValue($html, 'NextPartitionKey'),
+            'NextRowKey'                          => htmlInputValue($html, 'NextRowKey'),
+            'continuationToken.continuationToken' => htmlInputValue($html, 'continuationToken.continuationToken'),
+            'PrevCustomerCode'                    => htmlInputValue($html, 'PrevCustomerCode'),
+            'PrevCustomerVat'                     => htmlInputValue($html, 'PrevCustomerVat'),
+            'PrevCustomerName'                    => htmlInputValue($html, 'PrevCustomerName'),
         ];
+
+        $hasNext = $nextState['NextPartitionKey'] !== ''
+            || $nextState['NextRowKey'] !== ''
+            || $nextState['continuationToken.continuationToken'] !== '';
+
+        if (!$all || !$hasNext || $nextState === $state) {
+            $state = $nextState;
+            break;
+        }
+
+        $state = $nextState;
     }
 
-    $editHtml = _etim_get($ch, $base . '/customer/EditCustomer?cd=' . urlencode($match['encrCode']));
+    return [
+        'success'       => true,
+        'count'         => count($customers),
+        'pages_fetched' => $pages,
+        'has_next_page' => ($state['NextPartitionKey'] !== ''
+            || $state['NextRowKey'] !== ''
+            || $state['continuationToken.continuationToken'] !== ''),
+        'customers'     => $customers,
+    ];
+}
 
-    // Parse input field values: <input id="FieldId" ... value="...">
-    $field = function(string $id) use ($editHtml): string {
-        if (preg_match('/<input[^>]*id="' . preg_quote($id, '/') . '"[^>]*value="([^"]*)"/i', $editHtml, $m)) {
-            return html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        }
+function htmlSelectedValue(string $html, string $selectName): string {
+    $qName = preg_quote($selectName, '/');
+    if (!preg_match('/<select[^>]*name="' . $qName . '"[^>]*>(.*?)<\/select>/is', $html, $m)) {
         return '';
-    };
+    }
+    $block = $m[1];
+    if (preg_match('/<option[^>]*selected[^>]*value="([^"]*)"/i', $block, $o)) {
+        return html_entity_decode($o[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+    return '';
+}
 
-    // Parse selected option from Country dropdown
-    $country = '';
-    if (preg_match('/<select[^>]*id="Country"[^>]*>(.*?)<\/select>/s', $editHtml, $sel)) {
-        if (preg_match('/<option[^>]*selected[^>]*value="([^"]+)"/i', $sel[1], $co)) {
-            $country = $co[1];
+function findCustomerViewUrl(
+    \CurlHandle $ch,
+    string $customerVat = '',
+    string $customerCode = ''
+): array {
+    if ($customerVat === '' && $customerCode === '') {
+        return ['success' => false, 'error' => 'Customer VAT or customer code is required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/customer/ListCustomers');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load customer search form'];
+    }
+
+    $html = curlPost($ch, BASE_URL . '/customer/SearchCustomers', [
+        'Language'                            => 'el-GR',
+        'CompanyVat'                          => COMPANY_VAT,
+        'CustomerVat'                         => $customerVat,
+        'CustomerCode'                        => $customerCode,
+        'CustomerName'                        => '',
+        'NextPartitionKey'                    => '',
+        'NextRowKey'                          => '',
+        'continuationToken.continuationToken' => '',
+        'totalFechedRows'                     => '1000',
+        'PrevCustomerCode'                    => '',
+        'PrevCustomerVat'                     => '',
+        'PrevCustomerName'                    => '',
+        'btnSearch'                           => 'btnSearch',
+        '__RequestVerificationToken'          => $token,
+    ]);
+
+    $rows = extractTableRows($html, 'tblCustomers');
+    $matches = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 4) continue;
+
+        $code = trim($cols[1] ?? '');
+        $vat  = trim($cols[3] ?? '');
+        if ($customerCode !== '' && $code !== $customerCode) continue;
+        if ($customerVat !== '' && $vat !== $customerVat) continue;
+
+        if (!preg_match('/href="([^\"]*\/Customer\/viewcustomer\?[^\"]+)"/i', $row['html'], $m)) {
+            continue;
         }
+
+        $viewUrl = html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        if (strpos($viewUrl, 'http') !== 0) {
+            $viewUrl = 'https://mydata.aade.gr' . $viewUrl;
+        }
+
+        $matches[] = [
+            'customer_code' => $code,
+            'customer_vat'  => $vat,
+            'view_url'      => $viewUrl,
+        ];
+    }
+
+    if (count($matches) === 0) {
+        return [
+            'success' => false,
+            'error' => 'Customer not found in search results',
+            'target_vat' => $customerVat,
+            'target_code' => $customerCode,
+        ];
+    }
+
+    if (count($matches) > 1) {
+        return [
+            'success' => false,
+            'error' => 'Ambiguous customer selection: multiple exact matches found',
+            'target_vat' => $customerVat,
+            'target_code' => $customerCode,
+            'matches' => array_slice($matches, 0, 10),
+            'match_count' => count($matches),
+        ];
+    }
+
+    return ['success' => true] + $matches[0];
+}
+
+function deleteCustomerBySelector(
+    \CurlHandle $ch,
+    string $customerVat = '',
+    string $customerCode = ''
+): array {
+    $located = findCustomerViewUrl($ch, $customerVat, $customerCode);
+    if (empty($located['success'])) {
+        return $located;
+    }
+
+    $resolvedCode = (string)($located['customer_code'] ?? '');
+    $resolvedVat  = (string)($located['customer_vat'] ?? '');
+    $viewUrl      = (string)($located['view_url'] ?? '');
+
+    if ($resolvedCode === '' || $viewUrl === '') {
+        return ['success' => false, 'error' => 'Could not resolve customer identity for deletion'];
+    }
+
+    $viewHtml = curlGet($ch, $viewUrl);
+    $viewCode = htmlInputValue($viewHtml, 'customer.CustomerCode');
+    $viewVat  = htmlInputValue($viewHtml, 'customer.CustomerVat');
+
+    if ($customerCode !== '' && $viewCode !== $customerCode) {
+        return [
+            'success' => false,
+            'error' => 'Guard check failed: mismatched customer code before delete',
+            'expected_code' => $customerCode,
+            'found_code' => $viewCode,
+        ];
+    }
+    if ($customerVat !== '' && $viewVat !== $customerVat) {
+        return [
+            'success' => false,
+            'error' => 'Guard check failed: mismatched customer VAT before delete',
+            'expected_vat' => $customerVat,
+            'found_vat' => $viewVat,
+        ];
+    }
+
+    $deleted = deleteCustomerByCode($ch, $resolvedCode);
+    $deleted['customer_code'] = $resolvedCode;
+    $deleted['customer_vat'] = $resolvedVat;
+    $deleted['view_code'] = $viewCode;
+    $deleted['view_vat'] = $viewVat;
+    return $deleted;
+}
+
+function updateCustomer(
+    \CurlHandle $ch,
+    string $customerVat = '',
+    string $customerCode = '',
+    string $phone1 = '',
+    string $phone2 = '',
+    string $email = '',
+    string $jobDescription = '',
+    string $address = '',
+    string $city = '',
+    string $zip = '',
+    string $doy = '',
+    string $name = ''
+): array {
+    $hasChanges = $phone1 !== '' || $phone2 !== '' || $email !== '' || $jobDescription !== ''
+        || $address !== '' || $city !== '' || $zip !== '' || $doy !== '' || $name !== '';
+    if (!$hasChanges) {
+        return ['success' => false, 'error' => 'At least one update field is required'];
+    }
+
+    $located = findCustomerViewUrl($ch, $customerVat, $customerCode);
+    if (empty($located['success'])) {
+        return $located;
+    }
+
+    $viewUrl = $located['view_url'];
+    $viewBefore = curlGet($ch, $viewUrl);
+    $beforeVat = htmlInputValue($viewBefore, 'customer.CustomerVat');
+    $beforeCode = htmlInputValue($viewBefore, 'customer.CustomerCode');
+    if ($customerVat !== '' && $beforeVat !== $customerVat) {
+        return [
+            'success' => false,
+            'error'   => 'Guard check failed: mismatched customer VAT',
+            'expected_vat' => $customerVat,
+            'found_vat'    => $beforeVat,
+        ];
+    }
+    if ($customerCode !== '' && $beforeCode !== $customerCode) {
+        return [
+            'success' => false,
+            'error'   => 'Guard check failed: mismatched customer code',
+            'expected_code' => $customerCode,
+            'found_code'    => $beforeCode,
+        ];
+    }
+
+    if (!preg_match('/href="([^\"]*\/customer\/editcustomer\?[^\"]+)"/i', $viewBefore, $m)) {
+        return ['success' => false, 'error' => 'Could not find customer edit link'];
+    }
+    $editUrl = html_entity_decode($m[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if (strpos($editUrl, 'http') !== 0) {
+        $editUrl = 'https://mydata.aade.gr' . $editUrl;
+    }
+
+    $editHtml = curlGet($ch, $editUrl);
+    if (!preg_match('/<form[^>]*id="myform"[^>]*action="([^"]+)"/i', $editHtml, $f)) {
+        return ['success' => false, 'error' => 'Could not find customer update form action'];
+    }
+
+    $action = html_entity_decode($f[1], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if (strpos($action, 'http') !== 0) {
+        $action = 'https://mydata.aade.gr' . $action;
+    }
+
+    $payload = [
+        'customer.CompanyVAT'       => htmlInputValue($editHtml, 'customer.CompanyVAT'),
+        'customer.EncrCustomerCode' => htmlInputValue($editHtml, 'customer.EncrCustomerCode'),
+        'customer.Language'         => htmlInputValue($editHtml, 'customer.Language') !== '' ? htmlInputValue($editHtml, 'customer.Language') : 'el-GR',
+        'customer.CustomerType'     => htmlSelectedValue($editHtml, 'customer.CustomerType') !== '' ? htmlSelectedValue($editHtml, 'customer.CustomerType') : htmlInputValue($editHtml, 'customer.CustomerType'),
+        'customer.Country'          => htmlSelectedValue($editHtml, 'customer.Country') !== '' ? htmlSelectedValue($editHtml, 'customer.Country') : htmlInputValue($editHtml, 'customer.Country'),
+        'customer.isB2GCustomer'    => htmlInputValue($editHtml, 'customer.isB2GCustomer') !== '' ? htmlInputValue($editHtml, 'customer.isB2GCustomer') : 'false',
+        'customer.CustomerCode'     => htmlInputValue($editHtml, 'customer.CustomerCode'),
+        'customer.CustomerVat'      => htmlInputValue($editHtml, 'customer.CustomerVat'),
+        'customer.CustomerName'     => htmlInputValue($editHtml, 'customer.CustomerName'),
+        'customer.JobDescription'   => htmlInputValue($editHtml, 'customer.JobDescription'),
+        'customer.CustomerAddress'  => htmlInputValue($editHtml, 'customer.CustomerAddress'),
+        'customer.CustomerCity'     => htmlInputValue($editHtml, 'customer.CustomerCity'),
+        'customer.CustomerZipCode'  => htmlInputValue($editHtml, 'customer.CustomerZipCode'),
+        'customer.Doy'              => htmlInputValue($editHtml, 'customer.Doy'),
+        'customer.CustomerEmail'    => htmlInputValue($editHtml, 'customer.CustomerEmail'),
+        'customer.CustomerPhone1'   => htmlInputValue($editHtml, 'customer.CustomerPhone1'),
+        'customer.CustomerPhone2'   => htmlInputValue($editHtml, 'customer.CustomerPhone2'),
+        '__RequestVerificationToken'=> getToken($ch, $editUrl),
+    ];
+
+    if ($phone1 !== '') $payload['customer.CustomerPhone1'] = $phone1;
+    if ($phone2 !== '') $payload['customer.CustomerPhone2'] = $phone2;
+    if ($email !== '') $payload['customer.CustomerEmail'] = $email;
+    if ($jobDescription !== '') $payload['customer.JobDescription'] = $jobDescription;
+    if ($address !== '') $payload['customer.CustomerAddress'] = $address;
+    if ($city !== '') $payload['customer.CustomerCity'] = $city;
+    if ($zip !== '') $payload['customer.CustomerZipCode'] = $zip;
+    if ($doy !== '') $payload['customer.Doy'] = $doy;
+    if ($name !== '') $payload['customer.CustomerName'] = $name;
+
+    $response = curlPost($ch, $action, $payload);
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+
+    $viewAfter = curlGet($ch, $viewUrl);
+
+    $after = [
+        'customer_code' => htmlInputValue($viewAfter, 'customer.CustomerCode'),
+        'customer_vat'  => htmlInputValue($viewAfter, 'customer.CustomerVat'),
+        'name'          => htmlInputValue($viewAfter, 'customer.CustomerName'),
+        'phone1'        => htmlInputValue($viewAfter, 'customer.CustomerPhone1'),
+        'phone2'        => htmlInputValue($viewAfter, 'customer.CustomerPhone2'),
+        'email'         => htmlInputValue($viewAfter, 'customer.CustomerEmail'),
+        'address'       => htmlInputValue($viewAfter, 'customer.CustomerAddress'),
+        'city'          => htmlInputValue($viewAfter, 'customer.CustomerCity'),
+        'zip'           => htmlInputValue($viewAfter, 'customer.CustomerZipCode'),
+        'doy'           => htmlInputValue($viewAfter, 'customer.Doy'),
+    ];
+
+    $ok = stripos($finalUrl, '/Customer/ViewCustomer') !== false;
+    if ($customerVat !== '' && $after['customer_vat'] !== $customerVat) {
+        $ok = false;
+    }
+    if ($customerCode !== '' && $after['customer_code'] !== $customerCode) {
+        $ok = false;
     }
 
     return [
-        'vat'     => $afm,
-        'name'    => $field('CustomerName'),
-        'address' => $field('CustomerAddress'),
-        'city'    => $field('CustomerCity'),
-        'zip'     => $field('CustomerZipCode'),
-        'email'   => $field('CustomerEmail'),
-        'phone'   => $field('CustomerPhone1'),
-        'country' => $country,
-        'code'    => $match['code'],
+        'success'      => $ok,
+        'message'      => $ok ? 'Customer updated successfully' : 'Customer update could not be verified',
+        'view_url'     => $viewUrl,
+        'edit_url'     => $editUrl,
+        'action'       => $action,
+        'final_url'    => $finalUrl,
+        'target_vat'   => $customerVat,
+        'target_code'  => $customerCode,
+        'after'        => $after,
+        'raw'          => $ok ? null : substr((string)$response, 0, 500),
     ];
 }
 
-/**
- * List all customers saved in your e-timologio account (up to 500).
- *
- * @return array  ['success', 'count', 'customers' => [...]]
- */
-function etimologio_customers(\CurlHandle $ch): array {
-    $html = _etim_search_customers_html($ch, '', 500);
-
-    $customers = [];
-    foreach (_etim_parseRows($html) as $rowHtml) {
-        $cells = _etim_parseCells($rowHtml);
-        if (count($cells) < 7 || !ctype_digit($cells[0])) continue;
-        $customers[] = [
-            'no'      => (int) $cells[0],
-            'code'    => $cells[1] ?? '',
-            'type'    => $cells[2] ?? '',
-            'afm'     => $cells[3] ?? '',
-            'name'    => $cells[4] ?? '',
-            'address' => $cells[5] ?? '',
-            'city'    => $cells[6] ?? '',
-        ];
+function deleteCustomerByVat(\CurlHandle $ch, string $customerVat): array {
+    if ($customerVat === '') {
+        return ['success' => false, 'error' => 'Missing customer VAT'];
     }
 
-    if (empty($customers)) {
-        return ['success' => false, 'error' => 'Could not parse customers — page structure may have changed'];
-    }
-    return ['success' => true, 'count' => count($customers), 'customers' => $customers];
+    return deleteCustomerBySelector($ch, $customerVat, '');
 }
 
-/**
- * List all products/services in your e-timologio catalogue.
- * Returns full data (vat_category, classifications) when served from cache.
- * Cache is built automatically on first use; force rebuild with ?products=1&refresh=1.
- *
- * @return array  ['success', 'count', 'products' => [...]]
- */
-function etimologio_products(\CurlHandle $ch, bool $forceRefresh = false): array {
-    // Return from cache if available — includes vat_category and classifications
-    if (!$forceRefresh) {
-        $cached = _etim_cache_read();
-        if ($cached !== null && !empty($cached['products'])) {
-            return $cached;
-        }
+function searchInvoices(
+    \CurlHandle $ch,
+    string $issueDateFrom = '',
+    string $issueDateTo = '',
+    string $invoiceType = '',
+    string $mark = '',
+    string $series = '',
+    string $buyerVat = '',
+    string $invoiceStatus = '0',
+    bool $searchCounterpart = false,
+    bool $searchB2G = false
+): array {
+    $today = date('d/m/Y');
+    $fromDefault = date('01/m/Y');
+    $issueDateFrom = toSearchDate($issueDateFrom, $fromDefault);
+    $issueDateTo   = toSearchDate($issueDateTo, $today);
+
+    $token = getToken($ch, BASE_URL . '/invoice/ListInvoices');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load invoice search form'];
     }
 
-    // Cache not built yet or forced refresh — fetch plain list from AADE
-    $html = _etim_get($ch, _etim_baseUrl() . '/product/products');
-
-    $products = [];
-    foreach (_etim_parseRows($html) as $rowHtml) {
-        $cells = _etim_parseCells($rowHtml);
-        // Columns (verified live 2026-04-26):
-        // 0=#, 1=empty, 2=companyVat, 3=Τύπος, 4=cat_id, 5=empty, 6=Κωδ.είδους, 7=empty, 8=Περιγραφή, 9=qty, 10=ΦΠΑ%
-        if (count($cells) < 11 || !ctype_digit($cells[0])) continue;
-        if (trim($cells[6]) === '') continue; // skip rows without a product code
-        $products[] = [
-            'no'          => (int) $cells[0],
-            'type'        => $cells[3] ?? '',
-            'category'    => $cells[4] ?? '',
-            'code'        => $cells[6] ?? '',
-            'description' => $cells[8] ?? '',
-            'unit_price'  => '',
-            'vat_pct'     => $cells[10] ?? '',
-            'unit'        => '',
-        ];
-    }
-
-    if (empty($products)) {
-        return ['success' => false, 'error' => 'Could not parse products — page structure may have changed'];
-    }
-    return ['success' => true, 'count' => count($products), 'products' => $products];
-}
-
-/**
- * List invoice categories (Κατηγορίες Παραστατικών) configured in your account.
- * A category must exist before an invoice of that type can be issued.
- *
- * @return array  ['success', 'count', 'categories' => [...]]
- */
-function etimologio_categories(\CurlHandle $ch): array {
-    $html = _etim_get($ch, _etim_baseUrl() . '/series/ListSeries');
-
-    $categories = [];
-    foreach (_etim_parseRows($html) as $rowHtml) {
-        $cells = _etim_parseCells($rowHtml);
-        if (count($cells) < 6 || !ctype_digit($cells[0])) continue;
-        $categories[] = [
-            'no'          => (int) $cells[0],
-            'type'        => trim($cells[1]),
-            'id'          => trim($cells[2]),
-            'series'      => trim($cells[3]),
-            'aa_start'    => trim($cells[4]),
-            'description' => trim($cells[5]),
-        ];
-    }
-
-    if (empty($categories)) {
-        return ['success' => false, 'error' => 'Could not parse invoice categories — page structure may have changed'];
-    }
-    $result = ['success' => true, 'count' => count($categories), 'categories' => $categories];
-    _etim_series_cache_write($result);
-    return $result;
-}
-
-/**
- * Get all series configured for a given invoice type (reads from cache — no network call).
- * Returns [] if the series cache has not been populated yet.
- *
- * @param  string  $invoiceType  Invoice type code, e.g. '58'
- * @return array   Array of matching category rows, each: ['no','type','id','series','aa_start','description']
- */
-function etimologio_series_for_type(string $invoiceType): array {
-    $cached = _etim_series_cache_read();
-    if ($cached === null || empty($cached['categories'])) return [];
-    return array_values(array_filter($cached['categories'], fn($c) => $c['type'] === $invoiceType));
-}
-
-/**
- * List issued invoices within a date range.
- *
- * @param  string  $dateFrom     dd/mm/yyyy (default: 1st of current month)
- * @param  string  $dateTo       dd/mm/yyyy (default: today)
- * @param  string  $invoiceType  Filter by type code e.g. '58' (optional)
- * @param  string  $buyerVat     Filter by counterpart AFM (optional)
- * @return array
- */
-function etimologio_invoices(\CurlHandle $ch, string $dateFrom = '', string $dateTo = '', string $invoiceType = '', string $buyerVat = ''): array {
-    if ($dateFrom === '') $dateFrom = date('01/m/Y');
-    if ($dateTo   === '') $dateTo   = date('d/m/Y');
-
-    $html = _etim_searchInvoices($ch, [
-        'IssueDateFrom'  => $dateFrom,
-        'IssueDateTo'    => $dateTo,
-        'InvoiceType'    => $invoiceType,
-        'BuyerVatNumber' => $buyerVat,
+    $html = curlPost($ch, BASE_URL . '/invoice/SearchInvoices', [
+        'invoiveFormat'              => '1',
+        'Mark'                       => $mark,
+        'IssueDateFrom'              => $issueDateFrom,
+        'IssueDateTo'                => $issueDateTo,
+        'InvoiceType'                => $invoiceType,
+        'Series'                     => $series,
+        'BuyerVatNumber'             => $buyerVat,
+        'searchCancelledInvoices'    => in_array($invoiceStatus, ['0', '1', '2'], true) ? $invoiceStatus : '0',
+        'searchB2GInvoices'          => $searchB2G ? 'true' : 'false',
+        'searchCounterpart'          => $searchCounterpart ? 'true' : 'false',
+        'btnSearch'                  => 'btnSearch',
+        '__RequestVerificationToken' => $token,
     ]);
 
-    $invoices = [];
-    foreach (_etim_parseRows($html) as $rowHtml) {
-        $cells = _etim_parseCells($rowHtml);
-        if (count($cells) < 11 || !ctype_digit(trim($cells[0]))) continue;
-        $invoices[] = _etim_parseInvoiceRow($cells);
+    $rows = extractTableRows($html, 'tblInvoices');
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 11) continue;
+
+        $markValue = $cols[1] ?? '';
+        if (preg_match('/PrintInvoice2PdfNew\?mark=([0-9]+)/', $row['html'], $m)) {
+            $markValue = $m[1];
+        }
+
+        $items[] = [
+            'row_no'      => $cols[0] ?? '',
+            'mark'        => $markValue,
+            'type'        => $cols[2] ?? '',
+            'issue_date'  => ($cols[4] ?? '') !== '' ? ($cols[4] ?? '') : ($cols[3] ?? ''),
+            'series'      => $cols[5] ?? '',
+            'aa'          => $cols[6] ?? '',
+            'buyer_vat'   => $cols[7] ?? '',
+            'net_value'   => $cols[8] ?? '',
+            'vat_value'   => $cols[9] ?? '',
+            'total'       => $cols[10] ?? '',
+            'status'      => $invoiceStatus,
+            'columns'    => $cols,
+        ];
     }
 
     return [
-        'success'   => true,
-        'count'     => count($invoices),
-        'date_from' => $dateFrom,
-        'date_to'   => $dateTo,
-        'invoices'  => $invoices,
-        'note'      => empty($invoices) ? 'No invoices found in this date range' : null,
+        'success'         => true,
+        'count'           => count($items),
+        'issue_date_from' => $issueDateFrom,
+        'issue_date_to'   => $issueDateTo,
+        'invoice_type'    => $invoiceType,
+        'invoice_status'  => $invoiceStatus,
+        'invoices'        => $items,
     ];
 }
 
-/**
- * Fetch a single issued invoice's data by its MARK number.
- *
- * @return array  ['success', 'mark', 'type', 'issue_date', 'series', 'aa', 'counterpart', 'net', 'vat', 'total']
- */
-function etimologio_invoice(\CurlHandle $ch, string $mark): array {
-    $html = _etim_searchInvoices($ch, [
-        'Mark'          => $mark,
-        'IssueDateFrom' => '01/01/2020',
-        'IssueDateTo'   => date('d/m/Y'),
-    ]);
+function searchTempInvoices(
+    \CurlHandle $ch,
+    string $saveDateFrom = '',
+    string $saveDateTo = '',
+    string $invoiceType = '',
+    string $buyerVat = '',
+    string $tempInvoiceId = ''
+): array {
+    $today = date('d/m/Y');
+    $fromDefault = date('01/m/Y');
+    $saveDateFrom = toSearchDate($saveDateFrom, $fromDefault);
+    $saveDateTo   = toSearchDate($saveDateTo, $today);
 
-    foreach (_etim_parseRows($html) as $rowHtml) {
-        $cells = _etim_parseCells($rowHtml);
-        if (count($cells) < 11 || !ctype_digit(trim($cells[0]))) continue;
-        if (trim($cells[1]) !== $mark) continue;
-        return array_merge(['success' => true], _etim_parseInvoiceRow($cells));
+    $token = getToken($ch, BASE_URL . '/tempinvoice/TempInvoices');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load temp invoice search form'];
     }
 
-    return ['success' => false, 'error' => 'Invoice with MARK ' . $mark . ' not found'];
+    $html = curlPost($ch, BASE_URL . '/tempinvoice/SearchTempInvoices', [
+        'InvoiceType'                => $invoiceType,
+        'BuyerVatNumber'             => $buyerVat,
+        'TempInvoiceId'              => $tempInvoiceId,
+        'SaveDateFrom'               => $saveDateFrom,
+        'SaveDateTo'                 => $saveDateTo,
+        'btnSearch'                  => 'btnSearch',
+        '__RequestVerificationToken' => $token,
+    ]);
+
+    $rows = extractTableRows($html, 'tblTempInvoices');
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 6) continue;
+
+        $item = [
+            'row_no'    => $cols[0] ?? '',
+            'temp_id'   => $cols[1] ?? '',
+            'save_date' => $cols[2] ?? '',
+            'buyer_vat' => $cols[3] ?? '',
+            'type'      => $cols[4] ?? '',
+            'series'    => $cols[5] ?? '',
+            'columns'   => $cols,
+        ];
+
+        if (preg_match('/deleteTempInvoice\(\'([^\']+)\',\s*\'([^\']+)\'\)/', $row['html'], $m)) {
+            $item['temp_id'] = $m[1];
+            $item['seller_vat'] = $m[2];
+        }
+
+        $items[] = $item;
+    }
+
+    return [
+        'success'        => true,
+        'count'          => count($items),
+        'save_date_from' => $saveDateFrom,
+        'save_date_to'   => $saveDateTo,
+        'temp_invoices'  => $items,
+    ];
 }
 
-/**
- * Get the PDF of an issued invoice by MARK.
- * Returns base64-encoded PDF data — decode to get raw bytes.
- *
- * @return array  ['success', 'mark', 'filename', 'mime', 'size', 'pdf_base64']
- */
-function etimologio_pdf(\CurlHandle $ch, string $mark): array {
-    $url      = _etim_baseUrl() . '/Invoice/PrintInvoice2PdfNew?' . http_build_query(['mark' => $mark]);
-    $response = _etim_get($ch, $url);
+function deleteTempInvoiceById(\CurlHandle $ch, string $tempInvoiceId, string $sellerVat = ''): array {
+    if ($tempInvoiceId === '') {
+        return ['success' => false, 'error' => 'Missing temp invoice id'];
+    }
 
-    if (!$response || substr($response, 0, 4) !== '%PDF') {
-        return ['success' => false, 'error' => 'PDF not found or invalid MARK'];
+    $response = curlPost($ch, BASE_URL . '/TempInvoice/DeleteTempInvoice', [
+        'TempInvoiceId' => $tempInvoiceId,
+        'SellerVAT'     => $sellerVat !== '' ? $sellerVat : COMPANY_VAT,
+    ]);
+
+    $decoded = json_decode($response, true);
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function deleteCustomerByCode(\CurlHandle $ch, string $customerCode): array {
+    if ($customerCode === '') {
+        return ['success' => false, 'error' => 'Missing customer code'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/Customer/DeleteCustomer', [
+        'CustomerCode' => $customerCode,
+        'companyVat'   => COMPANY_VAT,
+    ]);
+
+    $decoded = json_decode($response, true);
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function listSeries(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/series/ListSeries');
+    $rows = extractTableRows($html, 'tblSeries');
+
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 6) continue;
+
+        $item = [
+            'row_no'       => $cols[0] ?? '',
+            'invoice_type' => $cols[1] ?? '',
+            'series_id'    => $cols[2] ?? '',
+            'series_code'  => $cols[3] ?? '',
+            'start_aa'     => $cols[4] ?? '',
+            'description'  => $cols[5] ?? '',
+        ];
+
+        if (preg_match('/data-bound-id="([^"]+)"/', $row['html'], $m)) {
+            $item['invoice_type_code'] = $m[1];
+        }
+
+        if (preg_match('/deleteSeries\(\'([^\']+)\',\s*\'([^\']+)\'\)/', $row['html'], $m)) {
+            $item['company_vat'] = $m[1];
+            $item['delete_id']   = $m[2];
+        }
+
+        $items[] = $item;
+    }
+
+    return [
+        'success' => true,
+        'count'   => count($items),
+        'series'  => $items,
+    ];
+}
+
+function createSeries(
+    \CurlHandle $ch,
+    string $invoiceType,
+    string $seriesCode,
+    string $startAa = '1',
+    string $description = '',
+    bool $isTransFailure = false,
+    string $language = 'el-GR'
+): array {
+    if ($invoiceType === '' || $seriesCode === '') {
+        return ['success' => false, 'error' => 'Invoice type and series code are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/series/NewSeries');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load series form'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/series/NewSeries', [
+        'companyVAT'                 => COMPANY_VAT,
+        'Language'                   => $language,
+        '_invoiceType'               => $invoiceType,
+        'code'                       => $seriesCode,
+        'aa'                         => $startAa,
+        'description'                => $description,
+        'isTransFailure'             => $isTransFailure ? 'true' : 'false',
+        '__RequestVerificationToken' => $token,
+    ]);
+
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (stripos($finalUrl, '/series/listseries') !== false) {
+        return [
+            'success'      => true,
+            'message'      => 'Series created successfully',
+            'series_code'  => $seriesCode,
+            'invoice_type' => $invoiceType,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error'   => 'Failed to create series',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function updateSeries(
+    \CurlHandle $ch,
+    string $seriesId,
+    string $invoiceType = '',
+    string $seriesCode = '',
+    string $startAa = '',
+    string $description = '',
+    string $language = 'el-GR'
+): array {
+    if ($seriesId === '') {
+        return ['success' => false, 'error' => 'Missing series id'];
+    }
+
+    $seriesData = listSeries($ch);
+    if (empty($seriesData['series']) || !is_array($seriesData['series'])) {
+        return ['success' => false, 'error' => 'Could not load series list'];
+    }
+
+    $current = null;
+    foreach ($seriesData['series'] as $row) {
+        if (($row['series_id'] ?? '') === $seriesId) {
+            $current = $row;
+            break;
+        }
+    }
+
+    if (!$current) {
+        return ['success' => false, 'error' => 'Series id not found'];
+    }
+
+    $invoiceType = $invoiceType !== '' ? $invoiceType : (string)($current['invoice_type_code'] ?? '');
+    $seriesCode  = $seriesCode  !== '' ? $seriesCode  : (string)($current['series_code'] ?? '');
+    $startAa     = $startAa     !== '' ? $startAa     : (string)($current['start_aa'] ?? '1');
+    $description = $description !== '' ? $description : (string)($current['description'] ?? '');
+
+    if ($invoiceType === '' || $seriesCode === '') {
+        return ['success' => false, 'error' => 'Could not resolve required series fields for update'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/series/ListSeries');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load series update token'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/series/updateseries', [
+        'series.companyVAT'          => COMPANY_VAT,
+        'series.id'                  => $seriesId,
+        'series.Language'            => $language,
+        'series._invoiceType'        => $invoiceType,
+        'series.code'                => $seriesCode,
+        'series.aa'                  => $startAa,
+        'series.description'         => $description,
+        '__RequestVerificationToken' => $token,
+    ]);
+
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (stripos($finalUrl, '/series/listseries') !== false) {
+        return [
+            'success'      => true,
+            'message'      => 'Series updated successfully',
+            'series_id'    => $seriesId,
+            'series_code'  => $seriesCode,
+            'invoice_type' => $invoiceType,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error'   => 'Failed to update series',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function deleteSeriesById(\CurlHandle $ch, string $id): array {
+    if ($id === '') {
+        return ['success' => false, 'error' => 'Missing series id'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/Series/DeleteSeries', ['id' => $id]);
+    $decoded = json_decode($response, true);
+
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function listDeductions(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/deduction/ListDeductions');
+    $rows = extractTableRows($html, 'tblDeductions');
+
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 5) continue;
+
+        $item = [
+            'row_no'               => $cols[0] ?? '',
+            'description'          => $cols[1] ?? '',
+            'percentage_or_value'  => $cols[2] ?? '',
+            'value'                => $cols[3] ?? '',
+            'decrease_total_paid'  => $cols[4] ?? '',
+        ];
+
+        if (preg_match('/deleteDeduction\(\'([^\']+)\'\)/', $row['html'], $m)) {
+            $item['deduction_code'] = $m[1];
+        }
+
+        $items[] = $item;
     }
 
     return [
         'success'    => true,
-        'mark'       => $mark,
-        'filename'   => 'invoice-' . $mark . '.pdf',
-        'mime'       => 'application/pdf',
-        'size'       => strlen($response),
-        'pdf_base64' => base64_encode($response),
+        'count'      => count($items),
+        'deductions' => $items,
     ];
 }
 
-/**
- * Fetch a single product's VAT rate and AADE classifications for a given invoice type.
- * Queries AADE live — use the products cache for bulk lookups.
- *
- * @param  string  $code         Product code from your catalogue (e.g. 'ΥΠ001')
- * @param  string  $invoiceType  Invoice type code (default '58' = ΑΠΥ)
- * @return array   ['success', 'code', 'description', 'vat_category', 'vat_rate', 'classifications', 'raw']
- */
-function etimologio_product(\CurlHandle $ch, string $code, string $invoiceType = '58'): array {
-    $base = _etim_baseUrl();
-    $cvat = _etim_companyVat();
-    $raw  = _etim_get($ch, $base . '/Product/GetProduct?' . http_build_query([
-        'sCompanyVat' => $cvat,
-        'productCode' => $code,
+function deleteDeductionByCode(\CurlHandle $ch, string $deductionCode): array {
+    if ($deductionCode === '') {
+        return ['success' => false, 'error' => 'Missing deduction code'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/Deduction/DeleteDeduction', [
+        'DeductionCode' => $deductionCode,
+    ]);
+    $decoded = json_decode($response, true);
+
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function createDeduction(
+    \CurlHandle $ch,
+    string $description,
+    string $amountType,
+    string $amount,
+    string $decreaseTotalPaid,
+    string $language = 'el-GR'
+): array {
+    if ($description === '' || $amountType === '' || $amount === '' || $decreaseTotalPaid === '') {
+        return ['success' => false, 'error' => 'Description, amount type, amount, and decrease_total_paid are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/deduction/NewDeduction');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load deduction form'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/deduction/NewDeduction', [
+        'CompanyVAT'                 => COMPANY_VAT,
+        'Language'                   => $language,
+        'DeductionCode'              => '',
+        'DeductionDescription'       => $description,
+        'DeductionAmountType'        => $amountType,
+        'DeductionAmount'            => $amount,
+        'DecreaseTotalPaid'          => $decreaseTotalPaid,
+        '__RequestVerificationToken' => $token,
+    ]);
+
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (stripos($finalUrl, '/deduction/listdeductions') !== false) {
+        return [
+            'success'     => true,
+            'message'     => 'Deduction created successfully',
+            'description' => $description,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error'   => 'Failed to create deduction',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function updateDeduction(
+    \CurlHandle $ch,
+    string $deductionCode,
+    string $description,
+    string $amountType,
+    string $amount,
+    string $decreaseTotalPaid,
+    string $language = 'el-GR'
+): array {
+    if ($deductionCode === '' || $description === '' || $amountType === '' || $amount === '' || $decreaseTotalPaid === '') {
+        return ['success' => false, 'error' => 'Deduction code, description, amount type, amount, and decrease_total_paid are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/deduction/NewDeduction');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load deduction form'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/deduction/NewDeduction', [
+        'CompanyVAT'                 => COMPANY_VAT,
+        'Language'                   => $language,
+        'DeductionCode'              => $deductionCode,
+        'DeductionDescription'       => $description,
+        'DeductionAmountType'        => $amountType,
+        'DeductionAmount'            => $amount,
+        'DecreaseTotalPaid'          => $decreaseTotalPaid,
+        '__RequestVerificationToken' => $token,
+    ]);
+
+    $finalUrl = curl_getinfo($ch, CURLINFO_EFFECTIVE_URL);
+    if (stripos($finalUrl, '/deduction/listdeductions') !== false) {
+        return [
+            'success'        => true,
+            'message'        => 'Deduction updated successfully',
+            'deduction_code' => $deductionCode,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error'   => 'Failed to update deduction',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function listProducts(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/product/products');
+    $rows = extractTableRows($html, 'tblProducts');
+
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 10) continue;
+
+        $item = [
+            'row_no'           => $cols[0] ?? '',
+            'type'             => $cols[3] ?? '',
+            'category_id'      => $cols[4] ?? '',
+            'category'         => $cols[5] ?? '',
+            'product_code'     => $cols[6] ?? '',
+            'description'      => $cols[8] ?? '',
+            'unit_price'       => $cols[9] ?? '',
+            'vat'              => $cols[10] ?? '',
+            'measurement_unit' => $cols[11] ?? '',
+        ];
+
+        if (preg_match('/btnDeleteProduct[^>]*data-id="([^"]+)"/', $row['html'], $m)) {
+            $item['delete_code'] = $m[1];
+        }
+
+        $items[] = $item;
+    }
+
+    return [
+        'success'  => true,
+        'count'    => count($items),
+        'products' => $items,
+    ];
+}
+
+function deleteProductByCode(\CurlHandle $ch, string $productCode): array {
+    if ($productCode === '') {
+        return ['success' => false, 'error' => 'Missing product code'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/Product/Delete', [
+        'PrdCode' => $productCode,
+    ]);
+    $decoded = json_decode($response, true);
+
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function listProductCategories(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/product/productCategories');
+    $rows = extractTableRows($html, 'tblPrdCategories');
+
+    $items = [];
+    foreach ($rows as $row) {
+        $cols = array_map('htmlText', $row['cells']);
+        if (count($cols) < 4) continue;
+
+        $item = [
+            'row_no'      => $cols[0] ?? '',
+            'category_id' => $cols[1] ?? '',
+            'company_vat' => $cols[2] ?? '',
+            'name'        => $cols[3] ?? '',
+        ];
+
+        if (preg_match('/btnDeletePrdCategory[^>]*data-id="([^"]+)"/', $row['html'], $m)) {
+            $item['delete_id'] = $m[1];
+        }
+
+        $items[] = $item;
+    }
+
+    return [
+        'success'            => true,
+        'count'              => count($items),
+        'product_categories' => $items,
+    ];
+}
+
+function deleteProductCategoryById(\CurlHandle $ch, string $id): array {
+    if ($id === '') {
+        return ['success' => false, 'error' => 'Missing product category id'];
+    }
+
+    $response = curlPost($ch, BASE_URL . '/Product/DeleteCategory', ['id' => $id]);
+    $decoded = json_decode($response, true);
+
+    if (is_array($decoded)) {
+        return ['success' => true, 'result' => $decoded];
+    }
+
+    return [
+        'success' => true,
+        'note'    => 'Delete request sent',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+function getCompanyProfile(\CurlHandle $ch): array {
+    $html = curlGet($ch, BASE_URL . '/company/company');
+
+    $profile = [
+        'name'                    => htmlInputValue($html, 'company.Name'),
+        'job_description'         => htmlInputValue($html, 'company.JobDescription'),
+        'address'                 => htmlInputValue($html, 'company.Address'),
+        'phone'                   => htmlInputValue($html, 'company.Phone'),
+        'doy'                     => htmlInputValue($html, 'company.Doy'),
+        'language'                => htmlInputValue($html, 'company.Language'),
+        'logo_name'               => htmlInputValue($html, 'company.LogoName'),
+        'send_email_on_issuing'   => htmlInputValue($html, 'company.SendEmailOnIssuing') === 'true',
+        'digital_client'          => htmlInputValue($html, 'company.DigitalClient') === 'true',
+        'websrv_taxis_username'   => htmlInputValue($html, 'company.WebSrvTaxisUserName'),
+        'websrv_taxis_password'   => htmlInputValue($html, 'company.WebSrvTaxisPassoword'),
+        'has_accepted_terms'      => htmlInputValue($html, 'company.HasAcceptedTerms') === 'true',
+    ];
+
+    return [
+        'success' => true,
+        'company' => $profile,
+    ];
+}
+
+function getCompanyFromTaxis(\CurlHandle $ch): array {
+    $response = curlGet($ch, BASE_URL . '/Company/GetCompanyByTaxis?' . http_build_query([
+        'companyVat' => COMPANY_VAT,
+    ]));
+
+    $decoded = json_decode($response, true);
+    if (is_array($decoded)) {
+        return [
+            'success' => true,
+            'company' => $decoded,
+        ];
+    }
+
+    return [
+        'success' => false,
+        'error'   => 'Could not decode company response',
+        'raw'     => substr((string)$response, 0, 500),
+    ];
+}
+
+// --- PRODUCT CRUD -------------------------------------------------------
+
+function createProduct(
+    \CurlHandle $ch,
+    string $productType,
+    string $productCode,
+    string $productDescription,
+    string $productCategory = '',
+    string $taricCode = '',
+    string $unitPrice = '0',
+    string $vatCategory = '1',
+    string $unit = '',
+    string $specialType = '',
+    string $feesWithVAT = '',
+    string $otherTaxesWithVAT = ''
+): array {
+    if ($productCode === '' || $productType === '' || $productDescription === '') {
+        return ['success' => false, 'error' => 'Product code, type, and description are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/product/products');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load product form'];
+    }
+
+    $formData = [
+        'productType'           => $productType,
+        'productCode'           => $productCode,
+        'productCategory'       => $productCategory,
+        'taricCode'             => $taricCode,
+        'productDescription'    => $productDescription,
+        'unitPrice'             => $unitPrice,
+        'vatCategory'           => $vatCategory,
+        'unit'                  => $unit,
+        'specialType'           => $specialType,
+        'feesWithVAT'           => $feesWithVAT,
+        'otherTaxesWithVAT'     => $otherTaxesWithVAT,
+        '__RequestVerificationToken' => $token,
+    ];
+
+    $response = curlPost($ch, BASE_URL . '/product/create', $formData);
+    $decoded = json_decode($response, true);
+    
+    // Server returns JSON with success=true when product is created
+    if (is_array($decoded) && ($decoded['success'] === true || $decoded['success'] === 'true')) {
+        return ['success' => true, 'message' => 'Product created successfully', 'code' => $productCode];
+    }
+
+    return [
+        'success' => false,
+        'error'   => $decoded['message'] ?? 'Failed to create product',
+        'raw'     => $decoded,
+    ];
+}
+
+function updateProduct(
+    \CurlHandle $ch,
+    string $productCode,
+    string $productType,
+    string $productDescription,
+    string $productCategory = '',
+    string $taricCode = '',
+    string $unitPrice = '0',
+    string $vatCategory = '1',
+    string $unit = '',
+    string $specialType = '',
+    string $feesWithVAT = '',
+    string $otherTaxesWithVAT = ''
+): array {
+    if ($productCode === '' || $productType === '' || $productDescription === '') {
+        return ['success' => false, 'error' => 'Product code, type, and description are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/product/products');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load product form'];
+    }
+
+    $formData = [
+        'productCode'           => $productCode,
+        'productType'           => $productType,
+        'productCategory'       => $productCategory,
+        'taricCode'             => $taricCode,
+        'productDescription'    => $productDescription,
+        'unitPrice'             => $unitPrice,
+        'vatCategory'           => $vatCategory,
+        'unit'                  => $unit,
+        'specialType'           => $specialType,
+        'feesWithVAT'           => $feesWithVAT,
+        'otherTaxesWithVAT'     => $otherTaxesWithVAT,
+        '__RequestVerificationToken' => $token,
+    ];
+
+    $response = curlPost($ch, BASE_URL . '/product/create', $formData);
+    $decoded = json_decode($response, true);
+    
+    // Server returns JSON with success=true when product is updated
+    if (is_array($decoded) && ($decoded['success'] === true || $decoded['success'] === 'true')) {
+        return ['success' => true, 'message' => 'Product updated successfully', 'code' => $productCode];
+    }
+
+    return [
+        'success' => false,
+        'error'   => $decoded['message'] ?? 'Failed to update product',
+        'raw'     => $decoded,
+    ];
+}
+
+// --- PRODUCT CATEGORY CRUD -------------------------------------------------------
+
+function createProductCategory(
+    \CurlHandle $ch,
+    string $categoryName
+): array {
+    if ($categoryName === '') {
+        return ['success' => false, 'error' => 'Category name is required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/product/productCategories');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load category form'];
+    }
+
+    $formData = [
+        'prdCategoryName'       => $categoryName,
+        '__RequestVerificationToken' => $token,
+    ];
+
+    $response = curlPost($ch, BASE_URL . '/product/createCategory', $formData);
+    $decoded = json_decode($response, true);
+    
+    // Server returns JSON with success=true when category is created
+    if (is_array($decoded) && ($decoded['success'] === true || $decoded['success'] === 'true')) {
+        return ['success' => true, 'message' => 'Category created successfully', 'name' => $categoryName];
+    }
+
+    return [
+        'success' => false,
+        'error'   => $decoded['message'] ?? 'Failed to create category',
+        'raw'     => $decoded,
+    ];
+}
+
+function updateProductCategory(
+    \CurlHandle $ch,
+    string $categoryId,
+    string $categoryName
+): array {
+    if ($categoryId === '' || $categoryName === '') {
+        return ['success' => false, 'error' => 'Category id and name are required'];
+    }
+
+    $token = getToken($ch, BASE_URL . '/product/productCategories');
+    if ($token === '') {
+        return ['success' => false, 'error' => 'Could not load category form'];
+    }
+
+    $formData = [
+        'prdCategoryId'         => $categoryId,
+        'prdCategoryName'       => $categoryName,
+        '__RequestVerificationToken' => $token,
+    ];
+
+    $response = curlPost($ch, BASE_URL . '/product/createCategory', $formData);
+    $decoded = json_decode($response, true);
+    
+    // Server returns JSON with success=true when category is updated
+    if (is_array($decoded) && ($decoded['success'] === true || $decoded['success'] === 'true')) {
+        return ['success' => true, 'message' => 'Category updated successfully', 'id' => $categoryId];
+    }
+
+    return [
+        'success' => false,
+        'error'   => $decoded['message'] ?? 'Failed to update category',
+        'raw'     => $decoded,
+    ];
+}
+
+// --- 5. GET PRODUCT DATA (classifications, description) ----------------------
+
+function getProductData(\CurlHandle $ch, string $productCode, string $invoiceType): ?array {
+    $url = BASE_URL . '/Product/GetProduct?' . http_build_query([
+        'sCompanyVat' => COMPANY_VAT,
+        'productCode' => $productCode,
         'invoiceType' => $invoiceType,
         'selfPrice'   => 'false',
-    ]));
-    $data = json_decode($raw, true);
-    if (empty($data)) {
-        return ['success' => false, 'error' => 'Product not found'];
-    }
-    $vatMap = [1=>0.24, 2=>0.13, 3=>0.06, 4=>0.17, 5=>0.09, 6=>0.04, 7=>0.00, 8=>0.00];
-    return [
-        'success'         => true,
-        'code'            => $code,
-        'description'     => $data['d']               ?? '',
-        'vat_category'    => $data['v']                ?? null,
-        'vat_rate'        => $vatMap[$data['v'] ?? 1]  ?? 0.24,
-        'classifications' => array_map(fn($cl) => [
-            'invoice_type' => $cl['i']  ?? '',
-            'category'     => $cl['cc'] ?? '',
-            'category_name'=> $cl['ct'] ?? '',
-            'code'         => $cl['tc'] ?? '',
-            'code_name'    => $cl['tt'] ?? '',
-        ], $data['cl'] ?? []),
-        'raw'             => $data,
-    ];
+    ]);
+    $response = curlGet($ch, $url);
+    return json_decode($response, true) ?: null;
 }
 
-/**
- * Create a draft or live invoice.
- * Auto-builds product and series caches on first use.
- * Enriches counterpart from customer DB / Taxisnet when 'afm' is supplied.
- *
- * @param  array  $params  See SECTION 2 library guide for full param reference.
- * @return array  ['success', 'live', 'mark'|'temp_id', 'type', 'series', 'amount_net', 'amount_vat', 'amount_total']
- */
-function etimologio_create(\CurlHandle $ch, array $params): array {
-    $base = _etim_baseUrl();
-    $cvat = _etim_companyVat();
+// --- 6. CREATE INVOICE (draft by default, live if $live=true) ----------------
 
-    // Extract params with defaults
-    $amount              = (float)  ($params['amount']               ?? 0);
-    $invoiceType         = (string) ($params['type']                 ?? '58');
-    $paymentType         = (int)    ($params['payment']              ?? 3);
-    $description         = (string) ($params['description']          ?? 'ΥΠ001');
-    $language            = (string) ($params['language']             ?? 'el');
-    $live                = (bool)   ($params['live']                 ?? false);
-    $afm                 = (string) ($params['afm']                  ?? '');
-    $name                = (string) ($params['name']                 ?? '');
-    $address             = (string) ($params['address']              ?? '');
-    $city                = (string) ($params['city']                 ?? '');
-    $zip                 = (string) ($params['zip']                  ?? '');
-    $country             = (string) ($params['country']              ?? 'GR');
-    $branch              = (string) ($params['branch']               ?? '0');
-    $withholdingCategory = (int)    ($params['withholding_category'] ?? 0);
-    $withholdingAmount   = (float)  ($params['withholding_amount']   ?? 0.0);
-    $correlatedMark      = (string) ($params['correlated_mark']      ?? '');
-    $issueDate           = (string) ($params['issue_date']           ?? '');
-    $callerSeries        = (string) ($params['series']               ?? '');
-    $notes               = (string) ($params['notes']                ?? '');
-    $vatExemptionCat     = (int)    ($params['vat_exemption_category'] ?? 0);
+function createInvoice(
+    \CurlHandle $ch,
+    float $amount,
+    string $invoiceType = '58',
+    int $paymentType = 3,
+    string $description = 'ΥΠ001',
+    string $issueDate = '',
+    string $afm = '',
+    string $name = '',
+    string $address = '',
+    string $city = '',
+    string $zip = '',
+    string $country = 'GR',
+    string $branch = '0',
+    int $withholdingCategory = 0,
+    float $withholdingAmount = 0.0,
+    bool $live = false
+): array {
 
     if ($issueDate === '') {
-        // Draft and live endpoints use different date formats —
-        // savetempinvoice expects d-m-Y, /Invoice/create expects Y-m-d
         $issueDate = $live ? date('Y-m-d') : date('d-m-Y');
     }
 
-    // Fetch product from catalogue — use cache if available, auto-build cache if missing
-    $product = null;
-    $cached  = _etim_cache_read();
-    if ($cached === null || empty($cached['products'])) {
-        // Cache doesn't exist yet — build it now (same logic as ?products=1)
-        $plain = etimologio_products($ch, false);
-        if ($plain['success'] && !empty($plain['products'])) {
-            _etim_enrich_products($ch, $plain['products']);
-            _etim_cache_write($plain);
-            $cached = $plain;
-        }
-    }
-    if ($cached !== null && !empty($cached['products'])) {
-        foreach ($cached['products'] as $cp) {
-            if ($cp['code'] === $description) {
-                $vc      = $cp['vat_category'] ?? 1;
-                $product = [
-                    'd'  => $cp['description'] ?? '',
-                    'v'  => $vc,
-                    'cl' => array_map(fn($cl) => [
-                        'cc' => $cl['category'] ?? '',
-                        'tc' => $cl['code']     ?? '',
-                    ], $cp['classifications'][$invoiceType] ?? []),
-                ];
-                break;
-            }
-        }
-    }
-    if ($product === null) {
-        // Product not in cache (unknown code) — fall back to live API
-        $product = json_decode(_etim_get($ch, $base . '/Product/GetProduct?' . http_build_query([
-            'sCompanyVat' => $cvat,
-            'productCode' => $description,
-            'invoiceType' => $invoiceType,
-            'selfPrice'   => 'false',
-        ])), true) ?: null;
-    }
-
-    // VAT rate — read from product catalogue field 'v' (VAT category code from AADE)
-    // v: 1=24%, 2=13%, 3=6%, 4=17%, 5=9%, 6=4%, 7=0%, 8=Άνευ ΦΠΑ
-    // Fallback to invoice type zero_vat_types config when product not found
-    $vatCategoryMap = [1=>0.24, 2=>0.13, 3=>0.06, 4=>0.17, 5=>0.09, 6=>0.04, 7=>0.00, 8=>0.00];
-    $isZeroVat      = _etim_isZeroVat($invoiceType); // initial fallback from config
-    if ($product !== null && isset($product['v'])) {
-        $vatRate   = $vatCategoryMap[$product['v']] ?? 0.24;
-        $isZeroVat = ($vatRate === 0.0);
-    } else {
-        $vatRate   = $isZeroVat ? 0.0 : 0.24;
-    }
-    // Ensure $isZeroVat is always consistent with the resolved $vatRate,
-    // regardless of which path above set it.
-    $isZeroVat = ($vatRate === 0.0);
+    // Zero VAT for non-EU invoice types
+    $isZeroVat = in_array($invoiceType, ZERO_VAT_TYPES);
+    $vatRate   = $isZeroVat ? 0.0 : 0.24;
     $netValue  = round($amount, 2);
     $vatAmount = round($netValue * $vatRate, 2);
     $total     = round($netValue + $vatAmount, 2);
 
-    // Enrich counterpart — DB first, Taxisnet fallback for Greek AFMs (auto-creates if missing)
+    // Enrich counterpart — Taxisnet for GR clients, e-timologio database for foreign
     if ($afm !== '') {
-        $full = etimologio_customer_full($ch, $afm);
-        if ($full !== null) {
-            if ($name    === '') $name    = $full['name'];
-            if ($address === '') $address = $full['address'];
-            if ($city    === '') $city    = $full['city'];
-            if ($zip     === '') $zip     = $full['zip'];
-            if ($country === 'GR' && $full['country'] !== '') $country = $full['country'];
+        if (preg_match('/^\d{9}$/', $afm)) {
+            // Greek client — fetch from Taxisnet
+            $taxisData = getFromTaxisnet($ch, $afm);
+            if ($taxisData) {
+                if ($name    === '') $name    = $taxisData['name'];
+                if ($address === '') $address = $taxisData['address'];
+                if ($city    === '') $city    = $taxisData['city'];
+                if ($zip     === '') $zip     = $taxisData['zip'];
+            }
+        } else {
+            // Foreign client — fetch from e-timologio customer database
+            $dbData = getCustomerFromDatabase($ch, $afm, $invoiceType);
+            if ($dbData) {
+                if ($name    === '') $name    = $dbData['name'];
+                if ($address === '') $address = $dbData['address'];
+                if ($city    === '') $city    = $dbData['city'];
+                if ($zip     === '') $zip     = $dbData['zip'];
+                if ($country === 'GR') $country = $dbData['country'];
+            }
         }
     }
 
-    // Build classifications from product catalogue
-    $itemDescr       = isset($product['d']) ? $description . ' - ' . $product['d'] : $description;
+    // Fetch product data to get correct description and classifications per invoice type
+    $product   = getProductData($ch, $description, $invoiceType);
+    $itemDescr = isset($product['d']) ? $description . ' - ' . $product['d'] : $description;
+
+    // Build classifications from product definition (mirrors what JS does)
     $classifications = [];
     if (!empty($product['cl'])) {
         foreach ($product['cl'] as $cl) {
-            $classifications[] = ['clsCategory' => $cl['cc'], 'clsCode' => $cl['tc']];
+            $classifications[] = [
+                'clsCategory' => $cl['cc'],
+                'clsCode'     => $cl['tc'],
+            ];
         }
     } else {
-        // Fallback when product has no classifications.
-        // category1_3 = Έσοδα από Παροχή Υπηρεσιών (correct for all service invoice types)
-        // E3_561_003 = Πωλήσεις αγαθών και υπηρεσιών Λιανικές / E3_561_006 = Εξωτερικού (0% VAT)
         $classifications[] = [
             'clsCategory' => 'category1_3',
             'clsCode'     => $isZeroVat ? 'E3_561_006' : 'E3_561_003',
         ];
     }
 
-    // Withholding tax
+    // Build withholding tax array if applicable
     $invoiceTaxes = [];
     if ($withholdingCategory > 0 && $withholdingAmount > 0) {
         $invoiceTaxes[] = [
@@ -1087,73 +1778,29 @@ function etimologio_create(\CurlHandle $ch, array $params): array {
             'taxType'         => 1,
             'taxCategory'     => $withholdingCategory,
             'underlyingValue' => $netValue,
-            'taxAmount'       => (string) round($withholdingAmount, 2),
+            'taxAmount'       => (string)round($withholdingAmount, 2),
             'taxNotes'        => '',
         ];
     }
 
-    // Resolve series letter — auto-populate series cache if missing
-    $seriesMatches = etimologio_series_for_type($invoiceType);
-    if (empty($seriesMatches)) {
-        // Cache missing — fetch live and retry
-        etimologio_categories($ch);
-        $seriesMatches = etimologio_series_for_type($invoiceType);
-    }
-    if ($callerSeries !== '') {
-        // Caller supplied a series — validate it exists in the cache (if cache is available)
-        if (!empty($seriesMatches)) {
-            $validSeries = array_column($seriesMatches, 'series');
-            if (!in_array($callerSeries, $validSeries, true)) {
-                return ['success' => false, 'error' => 'Series "' . $callerSeries . '" is not configured for invoice type ' . $invoiceType . '. Valid: ' . implode(', ', $validSeries)];
-            }
-        }
-        $series = $callerSeries;
-    } else {
-        $series = !empty($seriesMatches) ? $seriesMatches[0]['series'] : 'A';
-        if (empty($seriesMatches)) {
-            error_log('etimologio: no series configured for invoice type ' . $invoiceType . ' — defaulting to A. Check e-timologio categories or run ?categories=1');
-        }
-    }
-
-    // Resolve vatExemptionCategory — per invoice type default, overridable by caller.
-    // Required by myDATA whenever vatCategory = 7 (0% VAT).
-    // Numeric codes map to current Greek VAT Code (Κ.ΦΠΑ ν.2859/2000) articles:
-    //   3  = Άρθρο 13 (πρώην 17) — τόπος παράδοσης αγαθών εκτός Ελλάδας (goods exported outside Greece)
-    //   4  = Άρθρο 14 (πρώην 18) — τόπος παροχής υπηρεσιών εκτός Ελλάδας (B2B services, EU or non-EU)
-    //   14 = Άρθρο 28 (πρώην 33) — ενδοκοινοτική παράδοση αγαθών (EU B2B goods, intra-community)
-    $vatExemptionDefaults = [
-        '1'  => 3,  // 1.1  Τιμολόγιο Πώλησης — Άρθρο 13 (non-EU goods); pass 14 for EU intra-community goods
-        '20' => 4,  // 2.1  Τιμολόγιο Παροχής Υπηρεσιών — Άρθρο 14 (rare to be 0% for domestic B2B)
-        '21' => 4,  // 2.2  Ενδοκοινοτική παροχή υπηρεσιών — Άρθρο 14
-        '22' => 4,  // 2.3  Παροχή υπηρεσιών τρίτων χωρών — Άρθρο 14
-        '57' => 4,  // 11.1 ΑΛΠ — Άρθρο 14 fallback
-        '58' => 4,  // 11.2 ΑΠΥ — Άρθρο 14 fallback
-        '61' => 4,  // 11.4 Πιστωτικό — inherits exemption from original invoice
-    ];
-    $resolvedVatExemption = $vatExemptionCat > 0
-        ? $vatExemptionCat
-        : ($vatExemptionDefaults[$invoiceType] ?? 4);
-
-    // Build invoice payload
     $invoice = [
         '_invoiceType'              => $invoiceType,
-        'CorrelatedInvoice'         => $correlatedMark,
+        'CorrelatedInvoice'         => '',
         'selfPricing'               => 'false',
-        'paymentType'               => (string) $paymentType,
+        'paymentType'               => (string)$paymentType,
         'invoiceFormat'             => 1,
-        'timologioIssueLanguage'    => $language,
         'DispatchTime'              => '',
         'isDeliveryNote'            => 'false',
         'trans'                     => 'false',
         'isB2G'                     => 'false',
         'tempInvoiceId'             => '',
-        'invoiceNotes'              => $notes,
+        'invoiceNotes'              => '',
         'transmissionFailure'       => '',
         'ccr_totalNetValueWithDisc' => '',
         'ccr_grossValue'            => '',
 
         'invoiceHeader' => [
-            'series'                     => $series,
+            'series'                     => 'A',  // Series A assumed — change if your setup differs
             'aa'                         => '',
             'issueDate'                  => $issueDate,
             'vehicleNumber'              => '',
@@ -1180,49 +1827,62 @@ function etimologio_create(\CurlHandle $ch, array $params): array {
             'countryDocumentId' => '',
             'customerCode'      => '',
             'emailAddress'      => '',
-            'address'           => ($zip !== '' || $address !== '' || $city !== '') ? [
+            'address'           => [
                 'street'     => $address,
-                'postalCode' => $zip !== '' ? $zip : '00000',
+                'postalCode' => $zip,
                 'city'       => $city,
                 'number'     => '0',
-            ] : [],
+            ],
         ],
 
         'invoiceTaxes' => $invoiceTaxes,
 
-        'invoiceLines' => [[
-            'lineNumber'                   => 1,
-            'itemId'                       => 1,
-            'itemCode'                     => $description,
-            'itemDescr'                    => $itemDescr,
-            'unitPrice'                    => $netValue,
-            'vatCategory'                  => ($product !== null && isset($product['v'])) ? (int) $product['v'] : ($isZeroVat ? 7 : 1),
-            'vatExemptionCategory'         => $isZeroVat ? $resolvedVatExemption : '',
-            'netValueWithoutDiscount'      => $netValue,
-            'discountValue'                => 0,
-            'netValueWithDiscount'         => $netValue,
-            'vatAmount'                    => $vatAmount,
-            'totalValue'                   => $total,
-            'discountAmount'               => 0,
-            'discountType'                 => 1,
-            'isGiftVoucher'                => false,
-            'otherMeasurementUnitTitle'    => '',
-            'otherMeasurementUnitQuantity' => '',
-            'classifications'              => [[
-                'classificationKind'     => 1,
-                'classificationCategory' => $classifications[0]['clsCategory'],
-                'classificationType'     => $classifications[0]['clsCode'],
-                'amount'                 => $netValue,
-            ]],
-        ]],
+        'invoiceLines' => [
+            [
+                'lineNumber'                   => 1,
+                'itemId'                       => 1,
+                'itemCode'                     => $description,
+                'itemDescr'                    => $itemDescr,
+                'unitPrice'                    => $netValue,
+                'vatCategory'                  => $isZeroVat ? 7 : 1,
+                'vatExemptionCategory'         => $isZeroVat ? 4 : '',
+                'netValueWithoutDiscount'      => $netValue,
+                'discountValue'                => 0,
+                'netValueWithDiscount'         => $netValue,
+                'vatAmount'                    => $vatAmount,
+                'totalValue'                   => $total,
+                'discountAmount'               => 0,
+                'discountType'                 => 1,
+                'isGiftVoucher'                => 'false',
+                'otherMeasurementUnitTitle'    => '',
+                'otherMeasurementUnitQuantity' => '',
+                'classifications'              => [
+                    [
+                        'classificationKind'     => 1,
+                        'classificationCategory' => $classifications[0]['clsCategory'],
+                        'classificationType'     => $classifications[0]['clsCode'],
+                        'amount'                 => $netValue,
+                    ],
+                ],
+            ],
+        ],
     ];
 
-    _etim_get($ch, $base . '/invoice/newinvoice');
+    curlGet($ch, BASE_URL . '/invoice/newinvoice');
 
     if ($live) {
-        $response = _etim_postInvoice($ch, $base . '/Invoice/create', $invoice);
+        // LIVE — submit to AADE, get MARK
+        $response = curlPostInvoice($ch, BASE_URL . '/Invoice/create', $invoice);
         $data     = json_decode($response, true);
-        if (!$data) return ['success' => false, 'error' => 'Invalid JSON response', 'raw' => substr($response, 0, 500)];
+
+        if (!$data) {
+            return [
+                'success' => false,
+                'error'   => 'Invalid JSON response',
+                'raw'     => substr($response, 0, 500),
+            ];
+        }
+
         if (isset($data['mark'])) {
             return [
                 'success'      => true,
@@ -1231,249 +1891,481 @@ function etimologio_create(\CurlHandle $ch, array $params): array {
                 'aa'           => $data['aa']    ?? '',
                 'qrUrl'        => $data['qrUrl'] ?? '',
                 'type'         => $invoiceType,
-                'series'       => $series,
                 'amount_net'   => $netValue,
                 'amount_vat'   => $vatAmount,
                 'amount_total' => $total,
             ];
         }
-        return ['success' => false, 'error' => $data['genericMsg'] ?? $data['message'] ?? 'Unknown error', 'raw' => $data];
+
+        return [
+            'success' => false,
+            'error'   => $data['genericMsg'] ?? $data['message'] ?? 'Unknown error',
+            'raw'     => $data,
+        ];
 
     } else {
-        $response = _etim_postInvoice($ch, $base . '/TempInvoice/savetempinvoice', $invoice);
+        // DRAFT — safe for testing, nothing submitted to AADE
+        $response = curlPostInvoice($ch, BASE_URL . '/TempInvoice/savetempinvoice', $invoice);
         $data     = json_decode($response, true);
-        if (!$data) return ['success' => false, 'error' => 'Invalid JSON response', 'raw' => substr($response, 0, 500)];
+
+        if (!$data) {
+            return [
+                'success' => false,
+                'error'   => 'Invalid JSON response',
+                'raw'     => substr($response, 0, 500),
+            ];
+        }
+
         if (isset($data['resultData'][0])) {
             return [
                 'success'      => true,
                 'live'         => false,
                 'temp_id'      => $data['resultData'][0],
                 'type'         => $invoiceType,
-                'series'       => $series,
                 'amount_net'   => $netValue,
                 'amount_vat'   => $vatAmount,
                 'amount_total' => $total,
-                'note'         => 'DRAFT only — not submitted to AADE, no MARK assigned',
+                'note'         => 'DRAFT only - not submitted to AADE, no MARK assigned',
             ];
         }
-        return ['success' => false, 'error' => $data['message'] ?? 'Unknown error', 'raw' => $data];
+
+        return [
+            'success' => false,
+            'error'   => $data['message'] ?? 'Unknown error',
+            'raw'     => $data,
+        ];
     }
 }
 
-// ============================================================================
-// SECTION 5 — HTTP ENTRY POINT
-// Runs only when this file is called directly via HTTP.
-// When included by another PHP script, this block is skipped entirely.
-// ============================================================================
+// --- 7. GET INVOICE PDF BY MARK ----------------------------------------------
 
-if (basename(__FILE__) === basename($_SERVER['SCRIPT_FILENAME'] ?? '')) {
+function getInvoicePdf(\CurlHandle $ch, string $mark): void {
+    $url      = BASE_URL . '/Invoice/PrintInvoice2PdfNew?' . http_build_query(['mark' => $mark]);
+    $response = curlGet($ch, $url);
 
-    // Auto-load config.php if present alongside this file and credentials not yet set
-    if (_etim_config()['company_vat'] === 'CHANGE_ME') {
-        $configPath = __DIR__ . '/config.php';
-        if (file_exists($configPath)) {
-            require_once $configPath;
-        }
+    if (!$response || substr($response, 0, 4) !== '%PDF') {
+        jsonError('PDF not found or invalid MARK');
     }
 
-    if (_etim_config()['company_vat'] === 'CHANGE_ME') {
-        _etim_jsonError('Credentials not configured — copy config.example.php to config.php and fill in your credentials', 403);
+    // ?pdf_raw=1 → stream binary directly (browser/download use)
+    // default    → return base64 JSON (API use)
+    if (isset($_GET['pdf_raw'])) {
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: inline; filename="invoice-' . $mark . '.pdf"');
+        header('Content-Length: ' . strlen($response));
+        echo $response;
+        exit;
     }
 
-    try {
-        $ch = etimologio_login();
-    } catch (\RuntimeException $e) {
-        _etim_jsonError($e->getMessage(), 503);
-        exit; // _etim_jsonError already exits, but be explicit for static analysis
-    }
-
-    // List products — ?products=1 serves from cache if available (auto-builds on first run)
-    // ?products=1&refresh=1 forces full cache rebuild
-    if (!empty($_REQUEST['products'])) {
-        $forceRefresh = !empty($_REQUEST['refresh']);
-
-        // Serve from cache if available and not forcing refresh
-        if (!$forceRefresh && ($cached = _etim_cache_read()) !== null) {
-            etimologio_close($ch);
-            _etim_jsonResponse($cached);
-        }
-
-        // Cache missing or refresh forced — fetch plain list then enrich with VAT + classifications
-        $r = etimologio_products($ch, $forceRefresh);
-
-        if ($r['success'] && !empty($r['products'])) {
-            // NOTE: makes one API call per product × invoice type — only paid on cache miss/refresh
-            _etim_enrich_products($ch, $r['products']);
-            _etim_cache_write($r);
-        }
-
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // Single product with classifications
-    if (isset($_REQUEST['product_lookup'])) {
-        $r = etimologio_product($ch, trim($_REQUEST['product_lookup']), trim($_REQUEST['inv_type'] ?? '58'));
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // List invoice categories
-    if (!empty($_REQUEST['categories'])) {
-        $r = etimologio_categories($ch);
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // List customers
-    if (!empty($_REQUEST['customers'])) {
-        $r = etimologio_customers($ch);
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // List invoices by date range
-    if (!empty($_REQUEST['invoices'])) {
-        $r = etimologio_invoices(
-            $ch,
-            trim($_REQUEST['date_from'] ?? ''),
-            trim($_REQUEST['date_to']   ?? ''),
-            trim($_REQUEST['invoice_type'] ?? ''),  // use distinct param to avoid collision
-            trim($_REQUEST['afm']       ?? '')
-        );
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // Taxisnet lookup (read-only, no customer saved)
-    if (!empty($_REQUEST['taxisnet'])) {
-        $taxisAfm = trim($_REQUEST['taxisnet']);
-        if (!preg_match('/^\d{9}$/', $taxisAfm)) {
-            etimologio_close($ch);
-            _etim_jsonError('Invalid AFM — must be 9 digits');
-        }
-        $info = etimologio_taxisnet($ch, $taxisAfm);
-        etimologio_close($ch);
-        _etim_jsonResponse($info
-            ? ['success' => true, 'afm' => $taxisAfm, 'info' => $info]
-            : ['success' => false, 'error' => 'AFM not found in Taxisnet']
-        );
-    }
-
-    // Invoice lookup by MARK
-    if (!empty($_REQUEST['mark_lookup'])) {
-        $r = etimologio_invoice($ch, trim($_REQUEST['mark_lookup']));
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // PDF by MARK
-    $mark = trim($_REQUEST['mark'] ?? '');
-    if ($mark !== '') {
-        $result = etimologio_pdf($ch, $mark);
-        if (!$result['success']) {
-            etimologio_close($ch);
-            _etim_jsonError($result['error']);
-        }
-        if (!empty($_REQUEST['pdf_raw'])) {
-            $pdf = base64_decode($result['pdf_base64']);
-            etimologio_close($ch);
-            header('Content-Type: application/pdf');
-            header('Content-Disposition: inline; filename="invoice-' . $mark . '.pdf"');
-            header('Content-Length: ' . strlen($pdf));
-            echo $pdf;
-            exit;
-        }
-        etimologio_close($ch);
-        _etim_jsonResponse($result);
-    }
-
-    // Shared params for invoice operations
-    $afm            = trim($_REQUEST['afm']             ?? '');
-    $amount         = (float) ($_REQUEST['amount']      ?? 0);
-    $type           = trim($_REQUEST['type']            ?? '58');
-    $correlatedMark = trim($_REQUEST['correlated_mark'] ?? '');
-    $country        = trim($_REQUEST['country']         ?? 'GR');
-
-    // Get series for a specific invoice type (from cache — no network call)
-    if (isset($_REQUEST['series_for_type'])) {
-        $invType = trim($_REQUEST['series_for_type']);
-        etimologio_close($ch);
-        $matches = etimologio_series_for_type($invType);
-        _etim_jsonResponse(['success' => true, 'invoice_type' => $invType, 'count' => count($matches), 'series' => $matches]);
-    }
-
-    // Customer find/create (no invoice — AFM only, no amount)
-    if ($amount === 0.0 && $type !== '61' && $afm !== '') {
-        if (!preg_match('/^\d{9}$/', $afm)) {
-            etimologio_close($ch);
-            _etim_jsonError('Invalid AFM — must be 9 digits for Greek clients');
-        }
-        $r = etimologio_customer($ch, $afm);
-        etimologio_close($ch);
-        _etim_jsonResponse($r);
-    }
-
-    // Validate AFM format for Greek clients
-    if ($afm !== '' && $country === 'GR' && !preg_match('/^\d{9}$/', $afm)) {
-        etimologio_close($ch);
-        _etim_jsonError('Invalid AFM — must be 9 digits for Greek clients');
-    }
-
-    // Credit note — auto-fetch amount and customer from original invoice
-    if ($type === '61' && $correlatedMark !== '' && $amount === 0.0) {
-        $original = etimologio_invoice($ch, $correlatedMark);
-        if (!$original['success']) {
-            etimologio_close($ch);
-            _etim_jsonResponse($original);
-        }
-        $amount = (float) str_replace(',', '.', str_replace('.', '', $original['net']));
-        if ($afm === '') $afm = $original['counterpart'];
-        $result = etimologio_create($ch, [
-            'amount'          => $amount,
-            'type'            => $type,
-            'payment'         => (int)   ($_REQUEST['payment']    ?? 3),
-            'description'     => trim(   $_REQUEST['description'] ?? 'ΥΠ001'),
-            'language'        => trim(   $_REQUEST['language']    ?? 'el'),
-            'live'            => !empty( $_REQUEST['live']),
-            'afm'             => $afm,
-            'correlated_mark' => $correlatedMark,
-            'series'          => trim(   $_REQUEST['series']                ?? ''),
-            'notes'           => trim(   $_REQUEST['notes']                 ?? ''),
-            'vat_exemption_category' => (int) ($_REQUEST['vat_exemption_category'] ?? 0),
-        ]);
-        $result['original_invoice'] = $original;
-        etimologio_close($ch);
-        _etim_jsonResponse($result);
-    }
-
-    // Standard invoice creation
-    if ($amount > 0) {
-        $result = etimologio_create($ch, [
-            'amount'               => $amount,
-            'type'                 => $type,
-            'payment'              => (int)   ($_REQUEST['payment']              ?? 3),
-            'description'          => trim(   $_REQUEST['description']           ?? 'ΥΠ001'),
-            'language'             => trim(   $_REQUEST['language']              ?? 'el'),
-            'live'                 => !empty( $_REQUEST['live']),
-            'afm'                  => $afm,
-            'name'                 => trim(   $_REQUEST['name']                  ?? ''),
-            'address'              => trim(   $_REQUEST['address']               ?? ''),
-            'city'                 => trim(   $_REQUEST['city']                  ?? ''),
-            'zip'                  => trim(   $_REQUEST['zip']                   ?? ''),
-            'country'              => $country,
-            'branch'               => trim(   $_REQUEST['branch']                ?? '0'),
-            'withholding_category' => (int)   ($_REQUEST['withholding_category'] ?? 0),
-            'withholding_amount'   => (float) ($_REQUEST['withholding_amount']   ?? 0.0),
-            'correlated_mark'      => $correlatedMark,
-            'series'               => trim(   $_REQUEST['series']                ?? ''),
-            'notes'                => trim(   $_REQUEST['notes']                 ?? ''),
-            'vat_exemption_category' => (int) ($_REQUEST['vat_exemption_category'] ?? 0),
-        ]);
-        etimologio_close($ch);
-        _etim_jsonResponse($result);
-    }
-
-    etimologio_close($ch);
-    _etim_jsonError('No valid action — provide: amount, mark, afm, taxisnet, products, customers, categories, series_for_type, invoices, or mark_lookup');
+    jsonResponse([
+        'success'    => true,
+        'mark'       => $mark,
+        'filename'   => 'invoice-' . $mark . '.pdf',
+        'mime'       => 'application/pdf',
+        'size'       => strlen($response),
+        'pdf_base64' => base64_encode($response),
+    ]);
 }
+
+// --- API ENTRY POINT ---------------------------------------------------------
+
+$mark                = trim($_GET['mark']                  ?? $_POST['mark']                  ?? '');
+$afm                 = trim($_GET['afm']                   ?? $_POST['afm']                   ?? '');
+$amount              = (float)($_GET['amount']             ?? $_POST['amount']                ?? 0);
+$type                = trim($_GET['type']                  ?? $_POST['type']                  ?? '58');
+$payment             = (int)($_GET['payment']              ?? $_POST['payment']               ?? 3);
+$descr               = trim($_GET['description']           ?? $_POST['description']           ?? 'ΥΠ001');
+$name                = trim($_GET['name']                  ?? $_POST['name']                  ?? '');
+$address             = trim($_GET['address']               ?? $_POST['address']               ?? '');
+$city                = trim($_GET['city']                  ?? $_POST['city']                  ?? '');
+$zip                 = trim($_GET['zip']                   ?? $_POST['zip']                   ?? '');
+$country             = trim($_GET['country']               ?? $_POST['country']               ?? 'GR');
+$branch              = trim($_GET['branch']                ?? $_POST['branch']                ?? '0');
+$withholdingCategory = (int)($_GET['withholding_category'] ?? $_POST['withholding_category']  ?? 0);
+$withholdingAmount   = (float)($_GET['withholding_amount'] ?? $_POST['withholding_amount']    ?? 0);
+$live                = !empty(($_GET['live']               ?? $_POST['live']                  ?? ''));
+
+$listCustomers       = !empty(($_GET['list_customers']     ?? $_POST['list_customers']        ?? ''));
+$allCustomers        = !empty(($_GET['all_customers']      ?? $_POST['all_customers']         ?? ''));
+$customerCodeFilter  = trim($_GET['customer_code']         ?? $_POST['customer_code']         ?? '');
+$customerNameFilter  = trim($_GET['customer_name']         ?? $_POST['customer_name']         ?? '');
+$customersPageSize   = (int)($_GET['customers_page_size']  ?? $_POST['customers_page_size']   ?? 1000);
+$customersMaxPages   = (int)($_GET['customers_max_pages']  ?? $_POST['customers_max_pages']   ?? 20);
+
+$createPersonalCust  = !empty(($_GET['create_personal_customer'] ?? $_POST['create_personal_customer'] ?? ''));
+$custName            = trim($_GET['cust_name']             ?? $_POST['cust_name']             ?? '');
+$custAddress         = trim($_GET['cust_address']          ?? $_POST['cust_address']          ?? '');
+$custCity            = trim($_GET['cust_city']             ?? $_POST['cust_city']             ?? '');
+$custZip             = trim($_GET['cust_zip']              ?? $_POST['cust_zip']              ?? '');
+$custDoy             = trim($_GET['cust_doy']              ?? $_POST['cust_doy']              ?? 'ΚΕΦΟΔΕ ΑΤΤΙΚΗΣ');
+$custCountry         = trim($_GET['cust_country']          ?? $_POST['cust_country']          ?? 'GR');
+$custJobDescription  = trim($_GET['cust_job_description']  ?? $_POST['cust_job_description']  ?? 'ΙΔΙΩΤΗΣ');
+$custEmail           = trim($_GET['cust_email']            ?? $_POST['cust_email']            ?? '');
+$custPhone1          = trim($_GET['cust_phone1']           ?? $_POST['cust_phone1']           ?? '');
+$custPhone2          = trim($_GET['cust_phone2']           ?? $_POST['cust_phone2']           ?? '');
+$custLanguage        = trim($_GET['cust_language']         ?? $_POST['cust_language']         ?? 'el-GR');
+$custIsB2G           = !empty(($_GET['cust_is_b2g']        ?? $_POST['cust_is_b2g']           ?? ''));
+$custCode            = trim($_GET['cust_code']             ?? $_POST['cust_code']             ?? '');
+$custVat             = trim($_GET['cust_vat']              ?? $_POST['cust_vat']              ?? '');
+$custOldVat          = trim($_GET['cust_old_vat']          ?? $_POST['cust_old_vat']          ?? '');
+
+$searchInvoicesFlag  = !empty(($_GET['search_invoices']    ?? $_POST['search_invoices']       ?? ''));
+$issueDateFrom       = trim($_GET['issue_date_from']       ?? $_POST['issue_date_from']       ?? '');
+$issueDateTo         = trim($_GET['issue_date_to']         ?? $_POST['issue_date_to']         ?? '');
+$searchInvoiceType   = trim($_GET['search_invoice_type']   ?? $_POST['search_invoice_type']   ?? $_GET['invoice_type'] ?? $_POST['invoice_type'] ?? $_GET['type'] ?? $_POST['type'] ?? '');
+$seriesFilter        = trim($_GET['series']                ?? $_POST['series']                ?? '');
+$buyerVatFilter      = trim($_GET['buyer_vat']             ?? $_POST['buyer_vat']             ?? '');
+$includeCancelled    = !empty(($_GET['include_cancelled']  ?? $_POST['include_cancelled']     ?? ''));
+$invoiceStatusFilter = trim($_GET['invoice_status']        ?? $_POST['invoice_status']        ?? '');
+$searchCounterpart   = !empty(($_GET['search_counterpart'] ?? $_POST['search_counterpart']    ?? ''));
+$searchB2G           = !empty(($_GET['search_b2g']         ?? $_POST['search_b2g']            ?? ''));
+
+if ($invoiceStatusFilter === '') {
+    $invoiceStatusFilter = $includeCancelled ? '1' : '0';
+}
+
+$searchTempFlag      = !empty(($_GET['search_temp']        ?? $_POST['search_temp']           ?? ''));
+$saveDateFrom        = trim($_GET['save_date_from']        ?? $_POST['save_date_from']        ?? '');
+$saveDateTo          = trim($_GET['save_date_to']          ?? $_POST['save_date_to']          ?? '');
+$tempInvoiceIdFilter = trim($_GET['temp_id']               ?? $_POST['temp_id']               ?? '');
+
+$deleteTempId        = trim($_GET['delete_temp_id']        ?? $_POST['delete_temp_id']        ?? '');
+$sellerVat           = trim($_GET['seller_vat']            ?? $_POST['seller_vat']            ?? '');
+$deleteCustomerCode  = trim($_GET['delete_customer_code']  ?? $_POST['delete_customer_code']  ?? '');
+$deleteCustomerVat   = trim($_GET['delete_customer_vat']   ?? $_POST['delete_customer_vat']   ?? '');
+
+$updateCustomerFlag  = !empty(($_GET['update_customer']    ?? $_POST['update_customer']       ?? ''));
+$updateCustomerVat   = trim($_GET['update_customer_vat']   ?? $_POST['update_customer_vat']   ?? '');
+$updateCustomerCode  = trim($_GET['update_customer_code']  ?? $_POST['update_customer_code']  ?? '');
+$updateName          = trim($_GET['update_name']           ?? $_POST['update_name']           ?? '');
+$updateAddress       = trim($_GET['update_address']        ?? $_POST['update_address']        ?? '');
+$updateCity          = trim($_GET['update_city']           ?? $_POST['update_city']           ?? '');
+$updateZip           = trim($_GET['update_zip']            ?? $_POST['update_zip']            ?? '');
+$updateDoy           = trim($_GET['update_doy']            ?? $_POST['update_doy']            ?? '');
+$updateEmail         = trim($_GET['update_email']          ?? $_POST['update_email']          ?? '');
+$updatePhone1        = trim($_GET['update_phone1']         ?? $_POST['update_phone1']         ?? '');
+$updatePhone2        = trim($_GET['update_phone2']         ?? $_POST['update_phone2']         ?? '');
+$updateJobDesc       = trim($_GET['update_job_description'] ?? $_POST['update_job_description'] ?? '');
+
+$listSeriesFlag      = !empty(($_GET['list_series']               ?? $_POST['list_series']               ?? ''));
+$deleteSeriesId      = trim($_GET['delete_series_id']             ?? $_POST['delete_series_id']          ?? '');
+$newSeriesFlag       = !empty(($_GET['new_series']                ?? $_POST['new_series']                ?? ''));
+$updateSeriesId      = trim($_GET['update_series_id']             ?? $_POST['update_series_id']          ?? '');
+$seriesInvoiceType   = trim($_GET['series_invoice_type']          ?? $_POST['series_invoice_type']       ?? '');
+$seriesCode          = trim($_GET['series_code']                  ?? $_POST['series_code']               ?? '');
+$seriesStartAa       = trim($_GET['series_start_aa']              ?? $_POST['series_start_aa']           ?? '1');
+$seriesDescription   = trim($_GET['series_description']           ?? $_POST['series_description']        ?? '');
+$seriesIsTransFail   = !empty(($_GET['series_trans_failure']      ?? $_POST['series_trans_failure']      ?? ''));
+
+$newDeductionFlag    = !empty(($_GET['new_deduction']             ?? $_POST['new_deduction']             ?? ''));
+$updateDeductionCode = trim($_GET['update_deduction_code']        ?? $_POST['update_deduction_code']     ?? '');
+$deductionDesc       = trim($_GET['deduction_description']        ?? $_POST['deduction_description']     ?? '');
+$deductionAmtType    = trim($_GET['deduction_amount_type']        ?? $_POST['deduction_amount_type']     ?? '');
+$deductionAmt        = trim($_GET['deduction_amount']             ?? $_POST['deduction_amount']          ?? '');
+$deductionDecPaid    = trim($_GET['deduction_decrease_total_paid'] ?? $_POST['deduction_decrease_total_paid'] ?? '');
+
+$listDeductionsFlag  = !empty(($_GET['list_deductions']           ?? $_POST['list_deductions']           ?? ''));
+$deleteDeductionCode = trim($_GET['delete_deduction_code']        ?? $_POST['delete_deduction_code']     ?? '');
+
+$listProductsFlag    = !empty(($_GET['list_products']             ?? $_POST['list_products']             ?? ''));
+$deleteProductCode   = trim($_GET['delete_product_code']          ?? $_POST['delete_product_code']       ?? '');
+
+$listCategoriesFlag  = !empty(($_GET['list_product_categories']   ?? $_POST['list_product_categories']   ?? ''));
+$deleteCategoryId    = trim($_GET['delete_product_category_id']   ?? $_POST['delete_product_category_id'] ?? '');
+
+$newProductFlag      = !empty(($_GET['new_product']               ?? $_POST['new_product']               ?? ''));
+$updateProductCode   = trim($_GET['update_product_code']         ?? $_POST['update_product_code']       ?? '');
+$productType         = trim($_GET['product_type']                ?? $_POST['product_type']              ?? '');
+$productCode         = trim($_GET['product_code']               ?? $_POST['product_code']              ?? '');
+$productDescription  = trim($_GET['product_description']         ?? $_POST['product_description']       ?? '');
+$productCategory     = trim($_GET['product_category']            ?? $_POST['product_category']          ?? '');
+$taricCode          = trim($_GET['taric_code']                  ?? $_POST['taric_code']                ?? '');
+$unitPrice          = trim($_GET['unit_price']                  ?? $_POST['unit_price']                ?? '0');
+$vatCategory        = trim($_GET['vat_category']                ?? $_POST['vat_category']              ?? '1');
+$unit               = trim($_GET['unit']                        ?? $_POST['unit']                      ?? '');
+$specialType        = trim($_GET['special_type']                ?? $_POST['special_type']              ?? '');
+$feesWithVAT        = trim($_GET['fees_with_vat']               ?? $_POST['fees_with_vat']             ?? '');
+$otherTaxesWithVAT  = trim($_GET['other_taxes_with_vat']        ?? $_POST['other_taxes_with_vat']      ?? '');
+
+$newCategoryFlag     = !empty(($_GET['new_product_category']     ?? $_POST['new_product_category']     ?? ''));
+$updateCategoryId    = trim($_GET['update_category_id']         ?? $_POST['update_category_id']       ?? '');
+$categoryName        = trim($_GET['category_name']              ?? $_POST['category_name']            ?? '');
+
+$companyProfileFlag  = !empty(($_GET['company_profile']           ?? $_POST['company_profile']           ?? ''));
+$companyFromTaxis    = !empty(($_GET['company_from_taxis']        ?? $_POST['company_from_taxis']        ?? ''));
+
+$ch = login();
+
+// PDF retrieval by MARK — takes priority over all other parameters
+if ($mark !== '') {
+    getInvoicePdf($ch, $mark);
+}
+
+if ($deleteCustomerCode !== '' || $deleteCustomerVat !== '') {
+    $result = deleteCustomerBySelector($ch, $deleteCustomerVat, $deleteCustomerCode);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($deleteTempId !== '') {
+    $result = deleteTempInvoiceById($ch, $deleteTempId, $sellerVat);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($deleteSeriesId !== '') {
+    $result = deleteSeriesById($ch, $deleteSeriesId);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($deleteDeductionCode !== '') {
+    $result = deleteDeductionByCode($ch, $deleteDeductionCode);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($deleteProductCode !== '') {
+    $result = deleteProductByCode($ch, $deleteProductCode);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($deleteCategoryId !== '') {
+    $result = deleteProductCategoryById($ch, $deleteCategoryId);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($newSeriesFlag) {
+    $result = createSeries(
+        $ch,
+        $seriesInvoiceType,
+        $seriesCode,
+        $seriesStartAa,
+        $seriesDescription,
+        $seriesIsTransFail
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($updateSeriesId !== '') {
+    $result = updateSeries(
+        $ch,
+        $updateSeriesId,
+        $seriesInvoiceType,
+        $seriesCode,
+        $seriesStartAa,
+        $seriesDescription
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($newDeductionFlag) {
+    $result = createDeduction(
+        $ch,
+        $deductionDesc,
+        $deductionAmtType,
+        $deductionAmt,
+        $deductionDecPaid
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($updateDeductionCode !== '') {
+    $result = updateDeduction(
+        $ch,
+        $updateDeductionCode,
+        $deductionDesc,
+        $deductionAmtType,
+        $deductionAmt,
+        $deductionDecPaid
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($createPersonalCust) {
+    $result = createPersonalCustomer(
+        $ch,
+        $custName,
+        $custAddress,
+        $custCity,
+        $custZip,
+        $custDoy,
+        $custCountry,
+        $custJobDescription,
+        $custEmail,
+        $custPhone1,
+        $custPhone2,
+        $custLanguage,
+        $custIsB2G,
+        $custCode,
+        $custVat,
+        $custOldVat
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($updateCustomerFlag) {
+    $result = updateCustomer(
+        $ch,
+        $updateCustomerVat,
+        $updateCustomerCode,
+        $updatePhone1,
+        $updatePhone2,
+        $updateEmail,
+        $updateJobDesc,
+        $updateAddress,
+        $updateCity,
+        $updateZip,
+        $updateDoy,
+        $updateName
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($listCustomers || $allCustomers) {
+    $result = listCustomers(
+        $ch,
+        $afm,
+        $customerCodeFilter,
+        $customerNameFilter,
+        $allCustomers,
+        $customersPageSize,
+        $customersMaxPages
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($searchInvoicesFlag) {
+    $result = searchInvoices(
+        $ch,
+        $issueDateFrom,
+        $issueDateTo,
+        $searchInvoiceType,
+        $mark,
+        $seriesFilter,
+        $buyerVatFilter,
+        $invoiceStatusFilter,
+        $searchCounterpart,
+        $searchB2G
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($searchTempFlag) {
+    $result = searchTempInvoices(
+        $ch,
+        $saveDateFrom,
+        $saveDateTo,
+        $type,
+        $buyerVatFilter,
+        $tempInvoiceIdFilter
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($listSeriesFlag) {
+    $result = listSeries($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($listDeductionsFlag) {
+    $result = listDeductions($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($listProductsFlag) {
+    $result = listProducts($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($listCategoriesFlag) {
+    $result = listProductCategories($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($newProductFlag) {
+    $result = createProduct(
+        $ch, $productType, $productCode, $productDescription,
+        $productCategory, $taricCode, $unitPrice, $vatCategory,
+        $unit, $specialType, $feesWithVAT, $otherTaxesWithVAT
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($updateProductCode !== '') {
+    $result = updateProduct(
+        $ch, $updateProductCode, $productType, $productDescription,
+        $productCategory, $taricCode, $unitPrice, $vatCategory,
+        $unit, $specialType, $feesWithVAT, $otherTaxesWithVAT
+    );
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($newCategoryFlag) {
+    $result = createProductCategory($ch, $categoryName);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($updateCategoryId !== '') {
+    $result = updateProductCategory($ch, $updateCategoryId, $categoryName);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($companyProfileFlag) {
+    $result = getCompanyProfile($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+if ($companyFromTaxis) {
+    $result = getCompanyFromTaxis($ch);
+    curl_close($ch);
+    jsonResponse($result);
+}
+
+// Validate AFM — 9 digits required for GR clients only
+if ($afm !== '' && $country === 'GR' && !preg_match('/^\d{9}$/', $afm)) {
+    jsonError('Invalid AFM - must be 9 digits for Greek clients');
+}
+
+if ($amount > 0) {
+    // Invoice flow — find/create customer for GR clients only
+    if ($afm !== '' && preg_match('/^\d{9}$/', $afm)) {
+        $customer = findOrCreateCustomer($ch, $afm);
+        if (!$customer['success']) {
+            curl_close($ch);
+            jsonResponse($customer);
+        }
+    }
+    $result = createInvoice(
+        $ch, $amount, $type, $payment, $descr, '',
+        $afm, $name, $address, $city, $zip, $country, $branch,
+        $withholdingCategory, $withholdingAmount, $live
+    );
+} else {
+    // Customer lookup flow
+    if ($afm === '') jsonError('Missing AFM parameter');
+    $result = findOrCreateCustomer($ch, $afm);
+}
+
+curl_close($ch);
+jsonResponse($result);
